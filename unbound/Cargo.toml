@@ -9,6 +9,19 @@ documentation = "https://docs.rs/unbound"
 readme = "../README.md"
 keywords = ["binding", "substitution", "alpha-equivalence", "lambda", "ast"]
 categories = ["data-structures", "algorithms", "compilers"]
+include = [
+    "unbound/src/**",
+    "unbound/tests/**",
+    "unbound/examples/**",
+    "unbound-derive/src/**",
+    "tests/**",
+    "README.md",
+    "LICENSE",
+    "Cargo.toml",
+]
+exclude = [
+    ".github/**/*",
+]
 
 [dependencies]
 unbound-derive = { version = "0.1.0", path = "../unbound-derive" }

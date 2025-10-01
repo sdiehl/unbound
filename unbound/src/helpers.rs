@@ -2,7 +2,7 @@
 
 use crate::{Bind, Name};
 
-/// Helper function to create a name from a string (like s2n in Haskell)
+/// Helper function to create a name from a string
 pub fn s2n<T>(s: impl Into<String>) -> Name<T> {
     Name::new(s)
 }
