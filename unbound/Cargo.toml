@@ -1,0 +1,10 @@
+[package]
+name = "unbound"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+unbound-derive = { path = "../unbound-derive" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
