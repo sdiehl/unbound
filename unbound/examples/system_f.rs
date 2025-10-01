@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use unbound::{bind, s2n, Alpha, Bind, FreshM, Name, Subst};
+use unbound::prelude::*;
 
 /// Type variable names
 type TyName = Name<Ty>;
@@ -26,9 +26,9 @@ enum Ty {
 
 // Only need to specify when it's a variable
 impl Subst<Ty> for Ty {
-    fn is_var(&self) -> Option<unbound::SubstName<Ty>> {
+    fn is_var(&self) -> Option<SubstName<Ty>> {
         match self {
-            Ty::TyVar(v) => Some(unbound::SubstName::Name(v.clone())),
+            Ty::TyVar(v) => Some(SubstName::Name(v.clone())),
             _ => None,
         }
     }
@@ -59,7 +59,7 @@ impl Subst<Ty> for Ty {
 
 // Subst Tm Ty - terms don't substitute into types
 impl Subst<Tm> for Ty {
-    fn is_var(&self) -> Option<unbound::SubstName<Tm>> {
+    fn is_var(&self) -> Option<SubstName<Tm>> {
         None
     }
 
@@ -111,7 +111,7 @@ impl<T: Alpha> Alpha for Embed<T> {
         self.0.aeq(&other.0)
     }
 
-    fn aeq_in(&self, ctx: &mut unbound::alpha::AlphaCtx, other: &Self) -> bool {
+    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
         self.0.aeq_in(ctx, &other.0)
     }
 
@@ -121,7 +121,7 @@ impl<T: Alpha> Alpha for Embed<T> {
 }
 
 impl<T: Subst<V>, V> Subst<V> for Embed<T> {
-    fn is_var(&self) -> Option<unbound::SubstName<V>> {
+    fn is_var(&self) -> Option<SubstName<V>> {
         None
     }
 
@@ -132,6 +132,7 @@ impl<T: Subst<V>, V> Subst<V> for Embed<T> {
 
 /// System F terms
 #[derive(Clone, Debug, Alpha)]
+#[allow(dead_code)]
 enum Tm {
     /// Term variables
     TmVar(TmName),
@@ -147,9 +148,9 @@ enum Tm {
 
 // Only need to specify when it's a variable for Subst<Tm>
 impl Subst<Tm> for Tm {
-    fn is_var(&self) -> Option<unbound::SubstName<Tm>> {
+    fn is_var(&self) -> Option<SubstName<Tm>> {
         match self {
-            Tm::TmVar(v) => Some(unbound::SubstName::Name(v.clone())),
+            Tm::TmVar(v) => Some(SubstName::Name(v.clone())),
             _ => None,
         }
     }
@@ -189,7 +190,7 @@ impl Subst<Tm> for Tm {
 
 // Subst Ty Tm - substituting types in terms
 impl Subst<Ty> for Tm {
-    fn is_var(&self) -> Option<unbound::SubstName<Ty>> {
+    fn is_var(&self) -> Option<SubstName<Ty>> {
         None // Terms never contain type variables at the term level
     }
 
@@ -240,6 +241,7 @@ impl Tm {
         Tm::TLam(bind(tyvars, Box::new(body)))
     }
 
+    #[allow(dead_code)]
     fn app(t1: Tm, t2: Tm) -> Tm {
         Tm::App(Box::new(t1), Box::new(t2))
     }
@@ -441,7 +443,7 @@ fn main() {
 
     // Type check poly_id
     let ctx = Context::new();
-    match unbound::run_fresh(type_infer(&ctx, &poly_id)) {
+    match run_fresh(type_infer(&ctx, &poly_id)) {
         Ok(ty) => {
             println!("Type of poly_id: {}", ty);
             assert!(ty.aeq(&poly_id_ty), "Types should be alpha-equivalent");
@@ -475,7 +477,7 @@ fn main() {
     );
     println!("const_ty = {}", const_ty);
 
-    match unbound::run_fresh(type_infer(&ctx, &const_tm)) {
+    match run_fresh(type_infer(&ctx, &const_tm)) {
         Ok(ty) => {
             println!("Type of const: {}", ty);
             assert!(ty.aeq(&const_ty), "Types should be alpha-equivalent");
@@ -494,7 +496,7 @@ fn main() {
     let applied = Tm::tapp(poly_id.clone(), vec![some_poly_ty.clone()]);
 
     println!("poly_id [∀c. c] : (∀c. c) → (∀c. c)");
-    match unbound::run_fresh(type_infer(&ctx, &applied)) {
+    match run_fresh(type_infer(&ctx, &applied)) {
         Ok(ty) => {
             println!("Type after application: {}", ty);
             let expected = Ty::arr(some_poly_ty.clone(), some_poly_ty);
@@ -537,7 +539,7 @@ fn main() {
     );
 
     println!("bad_term = Λa. λy:b. y (b is unbound)");
-    match unbound::run_fresh(type_infer(&ctx, &bad_term)) {
+    match run_fresh(type_infer(&ctx, &bad_term)) {
         Ok(_) => println!("Unexpected success!"),
         Err(e) => println!("✓ Correctly caught error: {}", e),
     }

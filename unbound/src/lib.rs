@@ -1,21 +1,75 @@
 //! Locally nameless representation for capture-avoiding substitution
 //! and alpha equivalence in Rust.
+//!
+//! This library provides:
+//! - **Name types** for representing variables with globally unique identifiers
+//! - **Bind types** for representing binding constructs (like lambda
+//!   abstractions)
+//! - **Automatic alpha equivalence** via the `Alpha` trait (derivable)
+//! - **Capture-avoiding substitution** via the `Subst` trait (derivable)
+//! - **Fresh name generation** via the `FreshM` monad
+//!
+//! # Quick Start
+//!
+//! ```
+//! use unbound::prelude::*;
+//!
+//! #[derive(Clone, Debug, Alpha, Subst)]
+//! enum Expr {
+//!     Var(Name<Expr>),
+//!     Lam(Bind<Name<Expr>, Box<Expr>>),
+//!     App(Box<Expr>, Box<Expr>),
+//! }
+//! ```
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+// Re-export derive macros at the crate root
 pub use unbound_derive::{Alpha, Subst};
 
+// Module imports
+pub mod alpha;
 mod fresh;
-pub use fresh::{run_fresh, Fresh, FreshM, FreshState};
-
 mod subst;
+
+// Re-export main types and traits
+pub use alpha::{Alpha, AlphaCtx};
+pub use fresh::{run_fresh, Fresh, FreshM, FreshState};
 pub use subst::{Subst, SubstName};
 
-pub mod alpha;
-pub use alpha::Alpha;
+/// A prelude module that re-exports commonly used items
+pub mod prelude {
+    pub use crate::{
+        // Alpha equivalence context (for advanced usage)
+        alpha::AlphaCtx,
+
+        // Helper functions
+        bind,
+        // Fresh monad
+        run_fresh,
+        s2n,
+
+        // Traits
+        Alpha,
+        // Derive macros (available as Alpha and Subst)
+        Alpha as DeriveAlpha,
+        // Core types
+        Bind,
+        FreshM,
+
+        Name,
+
+        Subst,
+
+        Subst as DeriveSubst,
+
+        // Substitution types
+        SubstName,
+    };
+}
 
 /// A name with a phantom type parameter
 #[derive(Clone, Debug)]

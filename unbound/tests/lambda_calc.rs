@@ -1,6 +1,6 @@
 //! Example untyped lambda calculus implementation using unbound
 
-use unbound::{bind, run_fresh, s2n, Alpha, Bind, FreshM, Name, Subst};
+use unbound::prelude::*;
 
 /// Variables stand for expressions
 type Var = Name<Expr>;
