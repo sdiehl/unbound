@@ -234,7 +234,6 @@ mod tests {
 
     #[test]
     fn test_complex_example() {
-        // The example from the Haskell code
         let x = s2n::<Expr>("x");
         let y = s2n::<Expr>("y");
 
