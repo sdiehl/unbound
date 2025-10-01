@@ -11,6 +11,18 @@ The library provides two derivable macros for automatic implementation of:
   handles binding
 - **`Subst`**: Automatically derived capture-avoiding substitution
 
+
+```rust
+use unbound::prelude::*;
+
+#[derive(Clone, Debug, Alpha, Subst)]
+enum Expr {
+    Var(Name<Expr>),
+    Lam(Bind<Name<Expr>, Box<Expr>>),
+    App(Box<Expr>, Box<Expr>),
+}
+```
+
 ## How It Works
 
 The library implements the locally nameless representation where:
