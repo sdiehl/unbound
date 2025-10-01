@@ -6,7 +6,7 @@ description = "Derive macros for the unbound library"
 license = "MIT"
 repository = "https://github.com/sdiehl/unbound"
 documentation = "https://docs.rs/unbound-derive"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["derive", "macro", "binding", "substitution", "alpha-equivalence"]
 categories = ["development-tools::procedural-macro-helpers"]
 
