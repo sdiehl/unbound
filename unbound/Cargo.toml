@@ -2,6 +2,13 @@
 name = "unbound"
 version = "0.1.0"
 edition = "2021"
+description = "Locally nameless representation with automatic capture-avoiding substitution and alpha equivalence"
+license = "MIT"
+repository = "https://github.com/sdiehl/unbound"
+documentation = "https://docs.rs/unbound"
+readme = "../README.md"
+keywords = ["binding", "substitution", "alpha-equivalence", "lambda", "ast"]
+categories = ["data-structures", "algorithms", "compilers"]
 
 [dependencies]
 unbound-derive = { version = "0.1.0", path = "../unbound-derive" }
