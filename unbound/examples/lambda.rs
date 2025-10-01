@@ -1,6 +1,6 @@
 //! Example: Untyped lambda calculus with the unbound library
 
-use unbound::{bind, run_fresh, s2n, Alpha, Bind, Fresh, FreshM, Name, Subst};
+use unbound::{bind, run_fresh, s2n, Alpha, Bind, FreshM, Name, Subst};
 
 // Variables are names that stand for expressions
 type Var = Name<Expr>;
@@ -43,11 +43,7 @@ fn eval(expr: Expr) -> FreshM<Expr> {
         Expr::V(x) => FreshM::pure(Expr::V(x)),
         Expr::Lam(bnd) => {
             let (x, body) = bnd.unbind();
-            x.fresh().and_then(move |fresh_x| {
-                let body_subst = body.subst(&x, &Expr::V(fresh_x.clone()));
-                eval(*body_subst)
-                    .map(move |evaluated_body| Expr::Lam(bind(fresh_x, Box::new(evaluated_body))))
-            })
+            eval(*body).map(move |evaluated_body| Expr::Lam(bind(x, Box::new(evaluated_body))))
         }
         Expr::App(e1, e2) => eval(*e1.clone()).and_then(move |v1| {
             eval(*e2.clone()).and_then(move |v2| match v1 {

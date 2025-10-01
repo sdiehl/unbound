@@ -117,31 +117,6 @@ impl<T> Alpha for Name<T> {
     }
 }
 
-// Implement Alpha for Bind where the pattern is a Name
-impl<T: Alpha> Alpha for Bind<Name<T>, Box<T>> {
-    fn aeq(&self, other: &Self) -> bool {
-        let mut ctx = AlphaCtx::new();
-        self.aeq_in(&mut ctx, other)
-    }
-
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        // Bind the two pattern names to a fresh identifier
-        let old = ctx.bind(self.pattern(), other.pattern());
-        // Check alpha equivalence of bodies with the binding in place
-        let result = self.body().aeq_in(ctx, other.body());
-        // Restore the old mappings
-        ctx.unbind(self.pattern(), other.pattern(), old);
-        result
-    }
-
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        // Collect free vars from body
-        self.body().fv_in(vars);
-        // Remove the bound variable
-        vars.retain(|v| v != self.pattern().string());
-    }
-}
-
 // Implement Alpha for basic types
 impl Alpha for String {
     fn aeq(&self, other: &Self) -> bool {
@@ -200,5 +175,125 @@ impl<T: Alpha> Alpha for Box<T> {
 
     fn fv_in(&self, vars: &mut Vec<String>) {
         (**self).fv_in(vars)
+    }
+}
+
+// Implementation for tuples
+impl<A: Alpha, B: Alpha> Alpha for (A, B) {
+    fn aeq(&self, other: &Self) -> bool {
+        self.0.aeq(&other.0) && self.1.aeq(&other.1)
+    }
+
+    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
+        self.0.aeq_in(ctx, &other.0) && self.1.aeq_in(ctx, &other.1)
+    }
+
+    fn fv_in(&self, vars: &mut Vec<String>) {
+        self.0.fv_in(vars);
+        self.1.fv_in(vars);
+    }
+}
+
+// Specialized implementation for Bind where pattern is Name (most common case)
+impl<T: Alpha> Alpha for Bind<Name<T>, Box<T>> {
+    fn aeq(&self, other: &Self) -> bool {
+        let mut ctx = AlphaCtx::new();
+        self.aeq_in(&mut ctx, other)
+    }
+
+    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
+        // Bind the names
+        let old = ctx.bind(self.pattern(), other.pattern());
+        // Check bodies with binding
+        let result = self.body().aeq_in(ctx, other.body());
+        // Restore
+        ctx.unbind(self.pattern(), other.pattern(), old);
+        result
+    }
+
+    fn fv_in(&self, vars: &mut Vec<String>) {
+        self.body().fv_in(vars);
+        vars.retain(|v| v != self.pattern().string());
+    }
+}
+
+// Implementation for Bind with Vec<Name> pattern (general case for any body
+// type)
+impl<T: Alpha, U: Alpha> Alpha for Bind<Vec<Name<T>>, Box<U>> {
+    fn aeq(&self, other: &Self) -> bool {
+        let mut ctx = AlphaCtx::new();
+        self.aeq_in(&mut ctx, other)
+    }
+
+    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
+        let pattern1 = self.pattern();
+        let pattern2 = other.pattern();
+
+        if pattern1.len() != pattern2.len() {
+            return false;
+        }
+
+        // Bind all names
+        let old_bindings: Vec<_> = pattern1
+            .iter()
+            .zip(pattern2.iter())
+            .map(|(n1, n2)| ctx.bind(n1, n2))
+            .collect();
+
+        // Check bodies
+        let result = self.body().aeq_in(ctx, other.body());
+
+        // Restore
+        for ((n1, n2), old) in pattern1.iter().zip(pattern2.iter()).zip(old_bindings) {
+            ctx.unbind(n1, n2, old);
+        }
+
+        result
+    }
+
+    fn fv_in(&self, vars: &mut Vec<String>) {
+        self.body().fv_in(vars);
+        let bound_names: Vec<String> = self
+            .pattern()
+            .iter()
+            .map(|n| n.string().to_string())
+            .collect();
+        vars.retain(|v| !bound_names.contains(v));
+    }
+}
+
+// Implementation for Bind with tuple pattern (Name, Extra)
+impl<T: Alpha, U: Alpha> Alpha for Bind<(Name<T>, U), Box<T>> {
+    fn aeq(&self, other: &Self) -> bool {
+        let mut ctx = AlphaCtx::new();
+        self.aeq_in(&mut ctx, other)
+    }
+
+    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
+        let (name1, extra1) = self.pattern();
+        let (name2, extra2) = other.pattern();
+
+        // Check extra data
+        if !extra1.aeq_in(ctx, extra2) {
+            return false;
+        }
+
+        // Bind the name
+        let old = ctx.bind(name1, name2);
+
+        // Check bodies
+        let result = self.body().aeq_in(ctx, other.body());
+
+        // Restore
+        ctx.unbind(name1, name2, old);
+
+        result
+    }
+
+    fn fv_in(&self, vars: &mut Vec<String>) {
+        let (name, extra) = self.pattern();
+        extra.fv_in(vars);
+        self.body().fv_in(vars);
+        vars.retain(|v| v != name.string());
     }
 }

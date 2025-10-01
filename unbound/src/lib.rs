@@ -77,7 +77,7 @@ impl<T> Hash for Name<T> {
 }
 
 /// A binding construct that binds a name within a term
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Bind<P, T> {
     pattern: P,
     body: T,

@@ -1,4 +1,4 @@
-# Unbound - Locally Nameless Representation in Rust
+# Unbound
 
 A Rust for working with locally nameless representations, providing automatic capture-avoiding substitution and alpha equivalence for abstract syntax trees with binding.
 
@@ -22,3 +22,7 @@ The library implements the locally nameless representation where:
 - Bound variables use the same representation but are tracked through `Bind` constructs
 - Alpha equivalence compares terms modulo renaming of bound variables
 - Substitution automatically avoids variable capture
+
+## License
+
+MIT Licensed. Copyright 2025 Stephen Diehl.

@@ -41,22 +41,6 @@ impl<T: Clone> Subst<T> for Name<T> {
     }
 }
 
-// Implementation for Bind
-impl<P: Subst<V> + Clone, T: Subst<V> + Clone, V> Subst<V> for Bind<P, T> {
-    fn is_var(&self) -> Option<SubstName<V>> {
-        None
-    }
-
-    fn subst(&self, var: &Name<V>, value: &V) -> Self {
-        // Substitute in both pattern and body
-        // Note: a more sophisticated implementation would check for capture
-        Bind::new(
-            self.pattern().subst(var, value),
-            self.body().subst(var, value),
-        )
-    }
-}
-
 // Implementation for basic types
 impl<V> Subst<V> for String {
     fn is_var(&self) -> Option<SubstName<V>> {
@@ -115,5 +99,69 @@ impl<T: Subst<V> + Clone, V> Subst<V> for Box<T> {
 
     fn subst(&self, var: &Name<V>, value: &V) -> Self {
         Box::new((**self).subst(var, value))
+    }
+}
+
+// Implementation for tuples
+impl<A: Subst<V> + Clone, B: Subst<V> + Clone, V> Subst<V> for (A, B) {
+    fn is_var(&self) -> Option<SubstName<V>> {
+        None
+    }
+
+    fn subst(&self, var: &Name<V>, value: &V) -> Self {
+        (self.0.subst(var, value), self.1.subst(var, value))
+    }
+}
+
+// Specialized implementation for Bind with Name pattern
+impl<T: Subst<V> + Clone, V: Clone> Subst<V> for Bind<Name<V>, Box<T>> {
+    fn is_var(&self) -> Option<SubstName<V>> {
+        None
+    }
+
+    fn subst(&self, var: &Name<V>, value: &V) -> Self {
+        if self.pattern() == var {
+            // Variable is bound, no substitution
+            self.clone()
+        } else {
+            Bind::new(self.pattern().clone(), self.body().subst(var, value))
+        }
+    }
+}
+
+// Implementation for Bind with Vec<Name> pattern where we need to check if
+// names match
+impl<T: Subst<V> + Clone, V: Clone> Subst<V> for Bind<Vec<Name<V>>, Box<T>> {
+    fn is_var(&self) -> Option<SubstName<V>> {
+        None
+    }
+
+    fn subst(&self, var: &Name<V>, value: &V) -> Self {
+        if self.pattern().iter().any(|n| n == var) {
+            // Variable is bound, no substitution
+            self.clone()
+        } else {
+            Bind::new(self.pattern().clone(), self.body().subst(var, value))
+        }
+    }
+}
+
+// Implementation for Bind with tuple pattern (Name, Extra)
+impl<T: Subst<V> + Clone, U: Subst<V> + Clone, V: Clone> Subst<V> for Bind<(Name<V>, U), Box<T>> {
+    fn is_var(&self) -> Option<SubstName<V>> {
+        None
+    }
+
+    fn subst(&self, var: &Name<V>, value: &V) -> Self {
+        let (name, extra) = self.pattern();
+        if name == var {
+            // Variable is bound, but still substitute in annotation
+            Bind::new((name.clone(), extra.subst(var, value)), self.body().clone())
+        } else {
+            Bind::new(
+                (name.clone(), extra.subst(var, value)),
+                self.body().subst(var, value),
+            )
+        }
     }
 }

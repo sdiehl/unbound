@@ -7,4 +7,12 @@ edition = "2021"
 unbound-derive = { path = "../unbound-derive" }
 thiserror = { workspace = true }
 
+[[example]]
+name = "lambda"
+path = "examples/lambda.rs"
+
+[[example]]
+name = "system_f"
+path = "examples/system_f.rs"
+
 [dev-dependencies]
