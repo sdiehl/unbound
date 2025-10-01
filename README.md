@@ -25,7 +25,7 @@ enum Expr {
 
 ## How It Works
 
-### Phantom Types and Type Safety
+### Phantom Types
 
 The `Name<T>` type uses phantom type parameters to ensure type safety at the binding level. The phantom parameter `T` represents the type of AST that can contain this name as a variable:
 
@@ -74,7 +74,7 @@ pub struct FreshM<T> {
 }
 ```
 
-This allows `unbind` operations to generate fresh names when opening binders, ensuring no accidental capture during substitution operations. monad laws are satisfied through the `pure`, `map`, and `and_then` combinators.
+This allows `unbind` operations to generate fresh names when opening binders, ensuring no accidental capture during substitution operations.
 
 ## License
 
