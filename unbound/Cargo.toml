@@ -1,6 +1,6 @@
 [package]
 name = "unbound"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Locally nameless representation with automatic capture-avoiding substitution and alpha equivalence"
 license = "MIT"
