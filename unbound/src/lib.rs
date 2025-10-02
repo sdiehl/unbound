@@ -1,7 +1,6 @@
 //! Locally nameless representation for capture-avoiding substitution
 //! and alpha equivalence in Rust.
 //!
-//! This library provides:
 //! - **Name types** for representing variables with globally unique identifiers
 //! - **Bind types** for representing binding constructs (like lambda
 //!   abstractions)
@@ -11,7 +10,7 @@
 //!
 //! # Quick Start
 //!
-//! ```ignore
+//! ```
 //! use unbound::prelude::*;
 //!
 //! #[derive(Clone, Debug, Alpha, Subst)]
@@ -30,14 +29,9 @@ mod helpers;
 mod name;
 mod subst;
 
-// Re-export derive macros at the crate root
-// Re-export traits
 pub use alpha::{Alpha, AlphaCtx};
-// Re-export core types
 pub use bind::Bind;
-// Re-export fresh monad functionality
 pub use fresh::{run_fresh, Fresh, FreshM, FreshState};
-// Re-export helper functions
 pub use helpers::{bind, s2n};
 pub use name::Name;
 pub use subst::{Subst, SubstName};

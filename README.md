@@ -5,7 +5,7 @@ automatic capture-avoiding substitution and alpha equivalence for abstract
 syntax trees with binding when building functional language typecheckers and
 compilers.
 
-The library provides two derivable macros for automatic implementation of:
+Provides two derivable macros for automatic implementation of:
 
 - **`Alpha`**: Automatically derived alpha equivalence checking that correctly
   handles binding
@@ -59,6 +59,7 @@ trait Subst<V> {
 ```
 
 The derive macro generates `subst` implementations that:
+
 1. Check if the current term `is_var` matching the substitution target
 2. Traverse the AST, tracking which names are bound by `Bind` constructs
 3. Skip substitution under binders that capture the variable being substituted
