@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.dependencies]
 proc-macro2 = "^1.0"
-quote = "1.0.44"
+quote = "1.0.45"
 syn = { version = "2.0.116", features = [
   "full",
   "extra-traits",
