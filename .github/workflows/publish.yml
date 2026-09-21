@@ -56,6 +56,9 @@ jobs:
       run: cargo clippy --all -- -D warnings
 
     - name: Publish to crates.io
-      run: cargo publish
+      # --workspace publishes both crates in dependency order, resolving
+      # unbound's dependency on unbound-derive through a temporary local
+      # registry rather than waiting for the index to catch up.
+      run: cargo publish --workspace
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

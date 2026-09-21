@@ -60,6 +60,11 @@ removed again when it is opened.
 - The three `Subst` implementations for specific `Bind` shapes are replaced by
   one covering every pattern, and `Subst for Name<T>` is no longer restricted
   to names of the type being substituted.
+- The toolchain pin moves to 1.92.0, the oldest stable cargo that can publish
+  a workspace in dependency order, and the publish workflow uses
+  `cargo publish --workspace`. A bare `cargo publish` cannot select a package
+  in a virtual workspace, so tagging previously built and tested and then
+  failed at the upload step.
 - `derive(Subst)` no longer special-cases a variant named `Lam`. That case
   existed to skip substitution under a shadowing binder and is now handled
   generically and correctly by `Bind` itself.
