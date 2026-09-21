@@ -1,534 +1,274 @@
-//! Derive macros for unbound library
+//! Derive macros for the unbound library.
 
 use proc_macro::TokenStream;
-use quote::quote;
+use proc_macro2::TokenStream as TokenStream2;
+use quote::{format_ident, quote};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Ident};
 
-/// Derive macro for the Alpha trait
+/// Derive the `Alpha` trait.
+///
+/// Every field is traversed structurally. Binding is handled by the `Bind`
+/// fields themselves, so nothing here needs to know which variant is a
+/// binder.
 #[proc_macro_derive(Alpha)]
 pub fn derive_alpha(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let generics = &input.generics;
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let mut input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident.clone();
+    bound_type_params(&mut input.generics, syn::parse_quote!(unbound::Alpha));
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let aeq_impl = generate_aeq_impl(&input.data, name);
-    let aeq_in_impl = generate_aeq_in_impl(&input.data);
-    let fv_in_impl = generate_fv_in_impl(&input.data);
+    let aeq = aeq_body(&input.data);
+    let close = traversal_body(&input.data, &format_ident!("close"), quote!(level, names));
+    let open = traversal_body(&input.data, &format_ident!("open"), quote!(level, names));
+    let fv_in = traversal_body(&input.data, &format_ident!("fv_in"), quote!(acc));
 
-    let expanded = quote! {
+    quote! {
         impl #impl_generics unbound::Alpha for #name #ty_generics #where_clause {
             fn aeq(&self, other: &Self) -> bool {
-                #aeq_impl
+                #aeq
             }
 
-            fn aeq_in(&self, ctx: &mut unbound::alpha::AlphaCtx, other: &Self) -> bool {
-                #aeq_in_impl
+            fn close(&mut self, level: usize, names: &[unbound::AnyName]) {
+                #close
             }
 
-            fn fv_in(&self, vars: &mut Vec<String>) {
-                #fv_in_impl
+            fn open(&mut self, level: usize, names: &[unbound::AnyName]) {
+                #open
+            }
+
+            fn fv_in(&self, acc: &mut Vec<unbound::AnyName>) {
+                #fv_in
             }
         }
-    };
-
-    TokenStream::from(expanded)
+    }
+    .into()
 }
 
-fn generate_aeq_impl(data: &Data, name: &Ident) -> proc_macro2::TokenStream {
+/// Require `bound` of every type parameter, as a derive normally would.
+fn bound_type_params(generics: &mut syn::Generics, bound: syn::TypeParamBound) {
+    for param in generics.type_params_mut() {
+        param.bounds.push(bound.clone());
+    }
+}
+
+/// The names bound by a variant's fields, and the pattern that binds them.
+fn destructure(fields: &Fields, prefix: &str) -> (Vec<Ident>, TokenStream2) {
+    match fields {
+        Fields::Named(f) => {
+            let names: Vec<Ident> = f
+                .named
+                .iter()
+                .map(|f| f.ident.clone().expect("named field"))
+                .collect();
+            let bindings = names.iter().map(|n| {
+                let local = format_ident!("{}_{}", prefix, n);
+                quote!(#n: #local)
+            });
+            let locals: Vec<Ident> = names
+                .iter()
+                .map(|n| format_ident!("{}_{}", prefix, n))
+                .collect();
+            (locals, quote!({ #(#bindings),* }))
+        }
+        Fields::Unnamed(f) => {
+            let locals: Vec<Ident> = (0..f.unnamed.len())
+                .map(|i| format_ident!("{}_{}", prefix, i))
+                .collect();
+            (locals.clone(), quote!(( #(#locals),* )))
+        }
+        Fields::Unit => (Vec::new(), quote!()),
+    }
+}
+
+/// Field accessors for a struct, either `self.name` or `self.0`.
+fn struct_fields(fields: &Fields, receiver: TokenStream2) -> Vec<TokenStream2> {
+    match fields {
+        Fields::Named(f) => f
+            .named
+            .iter()
+            .map(|f| {
+                let n = f.ident.as_ref().expect("named field");
+                quote!(#receiver.#n)
+            })
+            .collect(),
+        Fields::Unnamed(f) => (0..f.unnamed.len())
+            .map(|i| {
+                let i = syn::Index::from(i);
+                quote!(#receiver.#i)
+            })
+            .collect(),
+        Fields::Unit => Vec::new(),
+    }
+}
+
+fn aeq_body(data: &Data) -> TokenStream2 {
     match data {
-        Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields) => {
-                let field_checks = fields.named.iter().map(|f| {
-                    let field_name = &f.ident;
-                    quote! {
-                        self.#field_name.aeq(&other.#field_name)
-                    }
-                });
-                quote! {
-                    #(#field_checks)&&*
-                }
+        Data::Struct(s) => {
+            let mine = struct_fields(&s.fields, quote!(self));
+            let theirs = struct_fields(&s.fields, quote!(other));
+            if mine.is_empty() {
+                return quote!(true);
             }
-            Fields::Unnamed(fields) => {
-                let field_checks = fields.unnamed.iter().enumerate().map(|(i, _)| {
-                    let index = syn::Index::from(i);
-                    quote! {
-                        self.#index.aeq(&other.#index)
-                    }
-                });
-                quote! {
-                    #(#field_checks)&&*
+            let checks = mine.iter().zip(&theirs).map(|(a, b)| quote!(#a.aeq(&#b)));
+            quote!(#(#checks)&&*)
+        }
+        Data::Enum(e) => {
+            let arms = e.variants.iter().map(|v| {
+                let variant = &v.ident;
+                let (mine, lhs) = destructure(&v.fields, "l");
+                let (theirs, rhs) = destructure(&v.fields, "r");
+                if mine.is_empty() {
+                    return quote!((Self::#variant #lhs, Self::#variant #rhs) => true);
                 }
-            }
-            Fields::Unit => quote! { true },
-        },
-        Data::Enum(data_enum) => {
-            let variant_matches = data_enum.variants.iter().map(|variant| {
-                let variant_name = &variant.ident;
-                match &variant.fields {
-                    Fields::Named(fields) => {
-                        let field_names: Vec<_> = fields
-                            .named
-                            .iter()
-                            .filter_map(|f| f.ident.as_ref())
-                            .collect();
-                        let other_field_names: Vec<_> = field_names
-                            .iter()
-                            .map(|f| quote::format_ident!("other_{}", f))
-                            .collect();
-                        let field_checks = field_names.iter().zip(other_field_names.iter()).map(
-                            |(field_name, other_field_name)| {
-                                quote! {
-                                    #field_name.aeq(#other_field_name)
-                                }
-                            },
-                        );
-                        let other_bindings = field_names.iter().zip(other_field_names.iter()).map(
-                            |(field_name, other_field_name)| {
-                                quote! { #field_name: #other_field_name }
-                            },
-                        );
-                        quote! {
-                            (#name::#variant_name { #(#field_names),* },
-                             #name::#variant_name { #(#other_bindings),* }) => {
-                                #(#field_checks)&&*
-                            }
-                        }
-                    }
-                    Fields::Unnamed(fields) => {
-                        let field_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("f{}", i))
-                            .collect();
-                        let other_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("other_f{}", i))
-                            .collect();
-                        let field_checks =
-                            field_names
-                                .iter()
-                                .zip(other_names.iter())
-                                .map(|(f, other_f)| {
-                                    quote! {
-                                        #f.aeq(#other_f)
-                                    }
-                                });
-                        quote! {
-                            (#name::#variant_name(#(#field_names),*),
-                             #name::#variant_name(#(#other_names),*)) => {
-                                #(#field_checks)&&*
-                            }
-                        }
-                    }
-                    Fields::Unit => {
-                        quote! {
-                            (#name::#variant_name, #name::#variant_name) => true
-                        }
-                    }
+                let checks = mine.iter().zip(&theirs).map(|(a, b)| quote!(#a.aeq(#b)));
+                quote! {
+                    (Self::#variant #lhs, Self::#variant #rhs) => #(#checks)&&*
                 }
             });
             quote! {
                 match (self, other) {
-                    #(#variant_matches,)*
+                    #(#arms,)*
                     _ => false,
                 }
             }
         }
-        Data::Union(_) => panic!("Unions are not supported"),
+        Data::Union(_) => panic!("Alpha cannot be derived for unions"),
     }
 }
 
-fn generate_aeq_in_impl(data: &Data) -> proc_macro2::TokenStream {
+/// A traversal that calls `method(args)` on every field in turn.
+fn traversal_body(data: &Data, method: &Ident, args: TokenStream2) -> TokenStream2 {
     match data {
-        Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields) => {
-                let field_checks = fields.named.iter().map(|f| {
-                    let field_name = &f.ident;
-                    quote! {
-                        self.#field_name.aeq_in(ctx, &other.#field_name)
-                    }
-                });
-                quote! {
-                    #(#field_checks)&&*
-                }
-            }
-            Fields::Unnamed(fields) => {
-                let field_checks = fields.unnamed.iter().enumerate().map(|(i, _)| {
-                    let index = syn::Index::from(i);
-                    quote! {
-                        self.#index.aeq_in(ctx, &other.#index)
-                    }
-                });
-                quote! {
-                    #(#field_checks)&&*
-                }
-            }
-            Fields::Unit => quote! { true },
-        },
-        Data::Enum(data_enum) => {
-            // Generate proper pattern matching for enums using aeq_in
-            let variant_matches = data_enum.variants.iter().map(|variant| {
-                let variant_name = &variant.ident;
-                match &variant.fields {
-                    Fields::Named(fields) => {
-                        let field_names: Vec<_> = fields
-                            .named
-                            .iter()
-                            .filter_map(|f| f.ident.as_ref())
-                            .collect();
-                        let other_field_names: Vec<_> = field_names
-                            .iter()
-                            .map(|f| quote::format_ident!("other_{}", f))
-                            .collect();
-                        let field_checks = field_names.iter().zip(other_field_names.iter()).map(
-                            |(field_name, other_field_name)| {
-                                quote! {
-                                    #field_name.aeq_in(ctx, #other_field_name)
-                                }
-                            },
-                        );
-                        let other_bindings = field_names.iter().zip(other_field_names.iter()).map(
-                            |(field_name, other_field_name)| {
-                                quote! { #field_name: #other_field_name }
-                            },
-                        );
-                        quote! {
-                            (Self::#variant_name { #(#field_names),* },
-                             Self::#variant_name { #(#other_bindings),* }) => {
-                                #(#field_checks)&&*
-                            }
-                        }
-                    }
-                    Fields::Unnamed(fields) => {
-                        let field_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("f{}", i))
-                            .collect();
-                        let other_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("other_f{}", i))
-                            .collect();
-                        let field_checks =
-                            field_names
-                                .iter()
-                                .zip(other_names.iter())
-                                .map(|(f, other_f)| {
-                                    quote! {
-                                        #f.aeq_in(ctx, #other_f)
-                                    }
-                                });
-                        quote! {
-                            (Self::#variant_name(#(#field_names),*),
-                             Self::#variant_name(#(#other_names),*)) => {
-                                #(#field_checks)&&*
-                            }
-                        }
-                    }
-                    Fields::Unit => {
-                        quote! {
-                            (Self::#variant_name, Self::#variant_name) => true
-                        }
-                    }
-                }
-            });
-            quote! {
-                match (self, other) {
-                    #(#variant_matches,)*
-                    _ => false,
-                }
-            }
+        Data::Struct(s) => {
+            let calls = struct_fields(&s.fields, quote!(self))
+                .into_iter()
+                .map(|f| quote!(#f.#method(#args);));
+            quote!(#(#calls)*)
         }
-        Data::Union(_) => panic!("Unions are not supported"),
-    }
-}
-
-fn generate_fv_in_impl(data: &Data) -> proc_macro2::TokenStream {
-    match data {
-        Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields) => {
-                let field_calls = fields.named.iter().map(|f| {
-                    let field_name = &f.ident;
-                    quote! {
-                        self.#field_name.fv_in(vars);
-                    }
-                });
+        Data::Enum(e) => {
+            let arms = e.variants.iter().map(|v| {
+                let variant = &v.ident;
+                let (locals, pat) = destructure(&v.fields, "f");
+                let calls = locals.iter().map(|l| quote!(#l.#method(#args);));
                 quote! {
-                    #(#field_calls)*
-                }
-            }
-            Fields::Unnamed(fields) => {
-                let field_calls = fields.unnamed.iter().enumerate().map(|(i, _)| {
-                    let index = syn::Index::from(i);
-                    quote! {
-                        self.#index.fv_in(vars);
-                    }
-                });
-                quote! {
-                    #(#field_calls)*
-                }
-            }
-            Fields::Unit => quote! {},
-        },
-        Data::Enum(data_enum) => {
-            let variant_matches = data_enum.variants.iter().map(|variant| {
-                let variant_name = &variant.ident;
-                match &variant.fields {
-                    Fields::Named(fields) => {
-                        let field_names: Vec<_> = fields
-                            .named
-                            .iter()
-                            .filter_map(|f| f.ident.as_ref())
-                            .collect();
-                        let field_calls = field_names.iter().map(|field_name| {
-                            quote! {
-                                #field_name.fv_in(vars);
-                            }
-                        });
-                        quote! {
-                            Self::#variant_name { #(#field_names),* } => {
-                                #(#field_calls)*
-                            }
-                        }
-                    }
-                    Fields::Unnamed(fields) => {
-                        let field_names: Vec<_> = (0..fields.unnamed.len())
-                            .map(|i| quote::format_ident!("f{}", i))
-                            .collect();
-                        let field_calls = field_names.iter().map(|f| {
-                            quote! {
-                                #f.fv_in(vars);
-                            }
-                        });
-                        quote! {
-                            Self::#variant_name(#(#field_names),*) => {
-                                #(#field_calls)*
-                            }
-                        }
-                    }
-                    Fields::Unit => {
-                        quote! {
-                            Self::#variant_name => {}
-                        }
-                    }
+                    Self::#variant #pat => { #(#calls)* }
                 }
             });
             quote! {
                 match self {
-                    #(#variant_matches)*
+                    #(#arms)*
                 }
             }
         }
-        Data::Union(_) => panic!("Unions are not supported"),
+        Data::Union(_) => panic!("Alpha cannot be derived for unions"),
     }
 }
 
-/// Derive macro for the Subst trait
+/// Derive the `Subst` trait for an AST substituting into itself.
+///
+/// A variant named `V`, `Var` or `Variable` holding a single `Name` is taken
+/// to be the variable case. Binders need no special treatment: a closed body
+/// has no name for an incoming term to capture.
 #[proc_macro_derive(Subst, attributes(subst_var))]
 pub fn derive_subst(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let generics = &input.generics;
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let (is_var_impl, subst_impl) = generate_subst_impl(&input.data, name);
+    let (is_var, subst) = subst_bodies(&input.data);
 
-    let expanded = quote! {
+    quote! {
         impl #impl_generics unbound::Subst<#name #ty_generics> for #name #ty_generics #where_clause {
             fn is_var(&self) -> Option<unbound::SubstName<#name #ty_generics>> {
-                #is_var_impl
+                #is_var
             }
 
-            fn subst(&self, var: &unbound::Name<#name #ty_generics>, value: &#name #ty_generics) -> Self {
-                #subst_impl
+            fn subst(
+                &self,
+                var: &unbound::Name<#name #ty_generics>,
+                value: &#name #ty_generics,
+            ) -> Self {
+                #subst
             }
         }
-    };
-
-    TokenStream::from(expanded)
+    }
+    .into()
 }
 
-fn generate_subst_impl(
-    data: &Data,
-    name: &Ident,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+fn subst_bodies(data: &Data) -> (TokenStream2, TokenStream2) {
     match data {
-        Data::Enum(data_enum) => {
-            // Check for a V or Var variant
-            let var_variant = data_enum
+        Data::Struct(s) => {
+            let fields = struct_fields(&s.fields, quote!(self));
+            let build = match &s.fields {
+                Fields::Named(f) => {
+                    let names: Vec<_> = f.named.iter().filter_map(|f| f.ident.as_ref()).collect();
+                    let inits = names
+                        .iter()
+                        .zip(&fields)
+                        .map(|(n, f)| quote!(#n: #f.subst(var, value)));
+                    quote!(Self { #(#inits),* })
+                }
+                Fields::Unnamed(_) => {
+                    let inits = fields.iter().map(|f| quote!(#f.subst(var, value)));
+                    quote!(Self( #(#inits),* ))
+                }
+                Fields::Unit => quote!(Self),
+            };
+            (quote!(None), build)
+        }
+        Data::Enum(e) => {
+            let var_variant = e
                 .variants
                 .iter()
-                .find(|v| v.ident == "V" || v.ident == "Var" || v.ident == "Variable");
+                .find(|v| v.attrs.iter().any(|a| a.path().is_ident("subst_var")))
+                .or_else(|| {
+                    e.variants
+                        .iter()
+                        .find(|v| v.ident == "V" || v.ident == "Var" || v.ident == "Variable")
+                })
+                .map(|v| &v.ident);
 
-            let is_var_impl = if let Some(var_variant) = var_variant {
-                let variant_name = &var_variant.ident;
-                quote! {
+            let is_var = match var_variant {
+                Some(v) => quote! {
                     match self {
-                        #name::#variant_name(x) => Some(unbound::SubstName::Name(x.clone())),
+                        Self::#v(x) => Some(unbound::SubstName::Name(x.clone())),
                         _ => None,
                     }
-                }
-            } else {
-                quote! { None }
+                },
+                None => quote!(None),
             };
 
-            let subst_cases = data_enum.variants.iter().map(|variant| {
-                let variant_name = &variant.ident;
-
-                // Special handling for variable variant
-                if Some(&variant.ident) == var_variant.as_ref().map(|v| &v.ident) {
-                    quote! {
-                        #name::#variant_name(x) => {
-                            if x == var {
-                                value.clone()
-                            } else {
-                                self.clone()
-                            }
+            let arms = e.variants.iter().map(|v| {
+                let variant = &v.ident;
+                if Some(variant) == var_variant {
+                    return quote! {
+                        Self::#variant(x) => {
+                            if x == var { value.clone() } else { self.clone() }
                         }
-                    }
-                } else if variant.ident == "Lam" {
-                    // Special handling for lambda variant with Bind
-                    match &variant.fields {
-                        Fields::Unnamed(_) => {
-                            quote! {
-                                #name::#variant_name(bnd) => {
-                                    // Check if the bound variable is the same as the substitution variable
-                                    let bound_var = bnd.pattern();
-                                    if bound_var == var {
-                                        // No substitution under the binder
-                                        self.clone()
-                                    } else {
-                                        // Perform capture-avoiding substitution
-                                        let body_subst = bnd.body().subst(var, value);
-                                        #name::#variant_name(unbound::bind(bound_var.clone(), body_subst))
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            // Fallback for other field types
-                            match &variant.fields {
-                                Fields::Named(fields) => {
-                                    let field_names: Vec<_> =
-                                        fields.named.iter().filter_map(|f| f.ident.as_ref()).collect();
-                                    let field_substs = field_names.iter().map(|field_name| {
-                                        quote! {
-                                            #field_name: #field_name.subst(var, value)
-                                        }
-                                    });
-                                    quote! {
-                                        #name::#variant_name { #(#field_names),* } => {
-                                            #name::#variant_name {
-                                                #(#field_substs),*
-                                            }
-                                        }
-                                    }
-                                }
-                                Fields::Unnamed(fields) => {
-                                    let field_names: Vec<_> = (0..fields.unnamed.len())
-                                        .map(|i| quote::format_ident!("f{}", i))
-                                        .collect();
-                                    let field_substs = field_names.iter().map(|f| {
-                                        quote! {
-                                            #f.subst(var, value)
-                                        }
-                                    });
-                                    quote! {
-                                        #name::#variant_name(#(#field_names),*) => {
-                                            #name::#variant_name(#(#field_substs),*)
-                                        }
-                                    }
-                                }
-                                Fields::Unit => {
-                                    quote! {
-                                        #name::#variant_name => #name::#variant_name
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    match &variant.fields {
-                        Fields::Named(fields) => {
-                            let field_names: Vec<_> =
-                                fields.named.iter().filter_map(|f| f.ident.as_ref()).collect();
-                            let field_substs = field_names.iter().map(|field_name| {
-                                quote! {
-                                    #field_name: #field_name.subst(var, value)
-                                }
-                            });
-                            quote! {
-                                #name::#variant_name { #(#field_names),* } => {
-                                    #name::#variant_name {
-                                        #(#field_substs),*
-                                    }
-                                }
-                            }
-                        }
-                        Fields::Unnamed(fields) => {
-                            let field_names: Vec<_> = (0..fields.unnamed.len())
-                                .map(|i| quote::format_ident!("f{}", i))
-                                .collect();
-                            let field_substs = field_names.iter().map(|f| {
-                                quote! {
-                                    #f.subst(var, value)
-                                }
-                            });
-                            quote! {
-                                #name::#variant_name(#(#field_names),*) => {
-                                    #name::#variant_name(#(#field_substs),*)
-                                }
-                            }
-                        }
-                        Fields::Unit => {
-                            quote! {
-                                #name::#variant_name => #name::#variant_name
-                            }
-                        }
-                    }
+                    };
                 }
+                let (locals, pat) = destructure(&v.fields, "f");
+                let build = match &v.fields {
+                    Fields::Named(f) => {
+                        let names: Vec<_> =
+                            f.named.iter().filter_map(|f| f.ident.as_ref()).collect();
+                        let inits = names
+                            .iter()
+                            .zip(&locals)
+                            .map(|(n, l)| quote!(#n: #l.subst(var, value)));
+                        quote!(Self::#variant { #(#inits),* })
+                    }
+                    Fields::Unnamed(_) => {
+                        let inits = locals.iter().map(|l| quote!(#l.subst(var, value)));
+                        quote!(Self::#variant( #(#inits),* ))
+                    }
+                    Fields::Unit => quote!(Self::#variant),
+                };
+                quote!(Self::#variant #pat => #build)
             });
 
-            let subst_impl = quote! {
-                match self {
-                    #(#subst_cases),*
-                }
-            };
-
-            (is_var_impl, subst_impl)
+            (is_var, quote!(match self { #(#arms),* }))
         }
-        Data::Struct(data_struct) => {
-            let is_var_impl = quote! { None };
-
-            let subst_impl = match &data_struct.fields {
-                Fields::Named(fields) => {
-                    let field_names: Vec<_> = fields
-                        .named
-                        .iter()
-                        .filter_map(|f| f.ident.as_ref())
-                        .collect();
-                    let field_substs = field_names.iter().map(|field_name| {
-                        quote! {
-                            #field_name: self.#field_name.subst(var, value)
-                        }
-                    });
-                    quote! {
-                        #name {
-                            #(#field_substs),*
-                        }
-                    }
-                }
-                Fields::Unnamed(fields) => {
-                    let field_substs = (0..fields.unnamed.len()).map(|i| {
-                        let index = syn::Index::from(i);
-                        quote! {
-                            self.#index.subst(var, value)
-                        }
-                    });
-                    quote! {
-                        #name(#(#field_substs),*)
-                    }
-                }
-                Fields::Unit => quote! { #name },
-            };
-
-            (is_var_impl, subst_impl)
-        }
-        Data::Union(_) => panic!("Unions are not supported"),
+        Data::Union(_) => panic!("Subst cannot be derived for unions"),
     }
 }

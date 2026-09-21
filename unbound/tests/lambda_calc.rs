@@ -37,7 +37,10 @@ impl std::fmt::Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::V(x) => write!(f, "{}", x),
-            Expr::Lam(bnd) => write!(f, "λ{}", bnd),
+            Expr::Lam(bnd) => {
+                let (x, body) = bnd.unbind_ref();
+                write!(f, "λ{}. {}", x, body)
+            }
             Expr::App(e1, e2) => write!(f, "({} {})", e1, e2),
         }
     }

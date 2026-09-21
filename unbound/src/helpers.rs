@@ -1,13 +1,14 @@
-//! Helper functions for working with names and bindings
+//! Shorthands for building names and bindings.
 
+use crate::alpha::{Alpha, Pattern};
 use crate::{Bind, Name};
 
-/// Helper function to create a name from a string
+/// Create a fresh name with the given spelling.
 pub fn s2n<T>(s: impl Into<String>) -> Name<T> {
     Name::new(s)
 }
 
-/// Helper function to bind a pattern in a body
-pub fn bind<P, T>(pattern: P, body: T) -> Bind<P, T> {
+/// Bind a pattern's names in a body, closing the body over them.
+pub fn bind<P: Pattern, T: Alpha>(pattern: P, body: T) -> Bind<P, T> {
     Bind::new(pattern, body)
 }

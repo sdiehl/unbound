@@ -1,23 +1,31 @@
-//! Substitution for terms with binding
+//! Capture-avoiding substitution.
+//!
+//! Because bodies are stored closed, a variable bound by an enclosing
+//! binder is a de Bruijn coordinate rather than a name, and there is no
+//! name under a binder for an incoming term to be captured by. Substitution
+//! is therefore a plain traversal with no freshening and no shadowing check.
 
 use std::collections::HashMap;
 
 use crate::{Bind, Name};
 
-/// A wrapper type for names used in substitution
+/// A name discovered by [`Subst::is_var`].
 pub enum SubstName<T> {
+    /// The term was a variable standing for this name.
     Name(Name<T>),
 }
 
-/// Trait for types that support substitution
+/// Terms that admit substitution of `V` for a `Name<V>`.
+///
+/// Derive this rather than writing it by hand.
 pub trait Subst<V>: Sized {
-    /// Check if this term is a variable and return its name
+    /// The name this term stands for, if it is a variable.
     fn is_var(&self) -> Option<SubstName<V>>;
 
-    /// Perform substitution of `value` for `var` in `self`
+    /// Replace free occurrences of `var` with `value`.
     fn subst(&self, var: &Name<V>, value: &V) -> Self;
 
-    /// Perform substitution with a mapping
+    /// Apply a whole substitution at once.
     fn subst_all(&self, subst_map: &HashMap<Name<V>, V>) -> Self
     where
         V: Clone,
@@ -30,19 +38,9 @@ pub trait Subst<V>: Sized {
     }
 }
 
-// Default implementation for Name (variables don't substitute into themselves)
-impl<T: Clone> Subst<T> for Name<T> {
-    fn is_var(&self) -> Option<SubstName<T>> {
-        None
-    }
-
-    fn subst(&self, _var: &Name<T>, _value: &T) -> Self {
-        self.clone()
-    }
-}
-
-// Implementation for basic types
-impl<V> Subst<V> for String {
+/// A name is never itself a term, whatever it stands for, so substitution
+/// leaves it alone. This covers binder positions inside patterns.
+impl<T, V> Subst<V> for Name<T> {
     fn is_var(&self) -> Option<SubstName<V>> {
         None
     }
@@ -52,27 +50,18 @@ impl<V> Subst<V> for String {
     }
 }
 
-impl<V> Subst<V> for usize {
-    fn is_var(&self) -> Option<SubstName<V>> {
-        None
-    }
-
-    fn subst(&self, _var: &Name<V>, _value: &V) -> Self {
-        *self
-    }
+macro_rules! subst_atom {
+    ($($ty:ty),* $(,)?) => {$(
+        impl<V> Subst<V> for $ty {
+            fn is_var(&self) -> Option<SubstName<V>> { None }
+            fn subst(&self, _var: &Name<V>, _value: &V) -> Self { self.clone() }
+        }
+    )*};
 }
 
-impl<V> Subst<V> for i32 {
-    fn is_var(&self) -> Option<SubstName<V>> {
-        None
-    }
+subst_atom!(bool, char, String, u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
-    fn subst(&self, _var: &Name<V>, _value: &V) -> Self {
-        *self
-    }
-}
-
-impl<T: Subst<V> + Clone, V> Subst<V> for Option<T> {
+impl<T: Subst<V>, V> Subst<V> for Option<T> {
     fn is_var(&self) -> Option<SubstName<V>> {
         None
     }
@@ -82,7 +71,7 @@ impl<T: Subst<V> + Clone, V> Subst<V> for Option<T> {
     }
 }
 
-impl<T: Subst<V> + Clone, V> Subst<V> for Vec<T> {
+impl<T: Subst<V>, V> Subst<V> for Vec<T> {
     fn is_var(&self) -> Option<SubstName<V>> {
         None
     }
@@ -92,7 +81,7 @@ impl<T: Subst<V> + Clone, V> Subst<V> for Vec<T> {
     }
 }
 
-impl<T: Subst<V> + Clone, V> Subst<V> for Box<T> {
+impl<T: Subst<V>, V> Subst<V> for Box<T> {
     fn is_var(&self) -> Option<SubstName<V>> {
         (**self).is_var()
     }
@@ -102,8 +91,7 @@ impl<T: Subst<V> + Clone, V> Subst<V> for Box<T> {
     }
 }
 
-// Implementation for tuples
-impl<A: Subst<V> + Clone, B: Subst<V> + Clone, V> Subst<V> for (A, B) {
+impl<A: Subst<V>, B: Subst<V>, V> Subst<V> for (A, B) {
     fn is_var(&self) -> Option<SubstName<V>> {
         None
     }
@@ -113,55 +101,18 @@ impl<A: Subst<V> + Clone, B: Subst<V> + Clone, V> Subst<V> for (A, B) {
     }
 }
 
-// Specialized implementation for Bind with Name pattern
-impl<T: Subst<V> + Clone, V: Clone> Subst<V> for Bind<Name<V>, Box<T>> {
+/// Substituting under a binder needs no special care: the binder's own
+/// variables are coordinates, and `value` is locally closed, so moving it
+/// underneath any number of binders cannot disturb it.
+impl<P: Subst<V>, T: Subst<V>, V> Subst<V> for Bind<P, T> {
     fn is_var(&self) -> Option<SubstName<V>> {
         None
     }
 
     fn subst(&self, var: &Name<V>, value: &V) -> Self {
-        if self.pattern() == var {
-            // Variable is bound, no substitution
-            self.clone()
-        } else {
-            Bind::new(self.pattern().clone(), self.body().subst(var, value))
-        }
-    }
-}
-
-// Implementation for Bind with Vec<Name> pattern where we need to check if
-// names match
-impl<T: Subst<V> + Clone, V: Clone> Subst<V> for Bind<Vec<Name<V>>, Box<T>> {
-    fn is_var(&self) -> Option<SubstName<V>> {
-        None
-    }
-
-    fn subst(&self, var: &Name<V>, value: &V) -> Self {
-        if self.pattern().iter().any(|n| n == var) {
-            // Variable is bound, no substitution
-            self.clone()
-        } else {
-            Bind::new(self.pattern().clone(), self.body().subst(var, value))
-        }
-    }
-}
-
-// Implementation for Bind with tuple pattern (Name, Extra)
-impl<T: Subst<V> + Clone, U: Subst<V> + Clone, V: Clone> Subst<V> for Bind<(Name<V>, U), Box<T>> {
-    fn is_var(&self) -> Option<SubstName<V>> {
-        None
-    }
-
-    fn subst(&self, var: &Name<V>, value: &V) -> Self {
-        let (name, extra) = self.pattern();
-        if name == var {
-            // Variable is bound, but still substitute in annotation
-            Bind::new((name.clone(), extra.subst(var, value)), self.body().clone())
-        } else {
-            Bind::new(
-                (name.clone(), extra.subst(var, value)),
-                self.body().subst(var, value),
-            )
-        }
+        Bind::from_parts(
+            self.pattern().subst(var, value),
+            self.body().subst(var, value),
+        )
     }
 }

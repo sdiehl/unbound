@@ -1,4 +1,12 @@
-//! Fresh name generation monad
+//! Fresh name generation.
+//!
+//! Freshness itself is guaranteed by the global name counter, so
+//! [`Bind::unbind`] needs no context to be safe. What [`FreshM`] adds is
+//! *readable* freshness: it remembers which spellings are already in play
+//! within a computation and suffixes new ones, turning a second `x` into
+//! `x1` rather than another `x` distinguishable only by index.
+//!
+//! [`Bind::unbind`]: crate::Bind::unbind
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -6,35 +14,38 @@ use std::rc::Rc;
 
 use crate::Name;
 
-/// State for fresh name generation
-#[derive(Clone, Debug)]
+/// The spellings handed out so far in a [`FreshM`] computation.
+#[derive(Clone, Debug, Default)]
 pub struct FreshState {
-    counter: usize,
     used_names: HashSet<String>,
 }
 
 impl FreshState {
+    /// An empty state.
     pub fn new() -> Self {
-        FreshState {
-            counter: 0,
-            used_names: HashSet::new(),
+        FreshState::default()
+    }
+
+    /// Claim a spelling, suffixing it until it is unused.
+    fn claim(&mut self, base: &str) -> String {
+        let mut candidate = base.to_string();
+        let mut suffix = 0;
+        while self.used_names.contains(&candidate) {
+            suffix += 1;
+            candidate = format!("{}{}", base, suffix);
         }
+        self.used_names.insert(candidate.clone());
+        candidate
     }
 }
 
-impl Default for FreshState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// The Fresh monad for generating fresh names
+/// A computation that draws readable fresh names.
 pub struct FreshM<T> {
     computation: Box<dyn FnOnce(Rc<RefCell<FreshState>>) -> T>,
 }
 
 impl<T> FreshM<T> {
-    /// Create a new FreshM computation
+    /// Build a computation from a closure over the naming state.
     pub fn new<F>(f: F) -> Self
     where
         F: FnOnce(Rc<RefCell<FreshState>>) -> T + 'static, {
@@ -43,36 +54,32 @@ impl<T> FreshM<T> {
         }
     }
 
-    /// Return a pure value
+    /// A computation that draws no names.
     pub fn pure(value: T) -> Self
     where
         T: 'static, {
         FreshM::new(move |_| value)
     }
 
-    /// Run the fresh computation with a new state
+    /// Run with a fresh naming state.
     pub fn run_fresh(self) -> T {
-        let state = Rc::new(RefCell::new(FreshState::new()));
-        (self.computation)(state)
+        self.run_with_state(Rc::new(RefCell::new(FreshState::new())))
     }
 
-    /// Run with an existing state
+    /// Run with an existing naming state.
     pub fn run_with_state(self, state: Rc<RefCell<FreshState>>) -> T {
         (self.computation)(state)
     }
 
-    /// Map a function over the result
+    /// Map a function over the result.
     pub fn map<U, F>(self, f: F) -> FreshM<U>
     where
         F: FnOnce(T) -> U + 'static,
         T: 'static, {
-        FreshM::new(move |state| {
-            let result = self.run_with_state(state.clone());
-            f(result)
-        })
+        FreshM::new(move |state| f(self.run_with_state(state)))
     }
 
-    /// Monadic bind operation
+    /// Sequence another computation after this one.
     pub fn flat_map<U, F>(self, f: F) -> FreshM<U>
     where
         F: FnOnce(T) -> FreshM<U> + 'static,
@@ -80,12 +87,11 @@ impl<T> FreshM<T> {
         U: 'static, {
         FreshM::new(move |state| {
             let result = self.run_with_state(state.clone());
-            let next = f(result);
-            next.run_with_state(state)
+            f(result).run_with_state(state)
         })
     }
 
-    /// Alias for flat_map
+    /// Alias for [`FreshM::flat_map`].
     pub fn and_then<U, F>(self, f: F) -> FreshM<U>
     where
         F: FnOnce(T) -> FreshM<U> + 'static,
@@ -95,37 +101,22 @@ impl<T> FreshM<T> {
     }
 }
 
-/// Trait for types that can provide fresh names
+/// Values that can be given a fresh, readable variant.
 pub trait Fresh {
-    /// Generate a fresh variant of this value
+    /// Produce a fresh variant of this value.
     fn fresh(&self) -> FreshM<Self>
     where
         Self: Sized;
 }
 
-impl<T> Fresh for Name<T> {
+impl<T: 'static> Fresh for Name<T> {
     fn fresh(&self) -> FreshM<Self> {
-        let base = self.string().to_string();
-        FreshM::new(move |state| {
-            let mut st = state.borrow_mut();
-            let mut candidate = base.clone();
-            let mut suffix = 0;
-
-            // Find a unique name
-            while st.used_names.contains(&candidate) {
-                suffix += 1;
-                candidate = format!("{}{}", base, suffix);
-            }
-
-            st.used_names.insert(candidate.clone());
-            st.counter += 1;
-
-            Name::with_index(candidate, st.counter - 1)
-        })
+        let base = self.string().unwrap_or("_").to_string();
+        FreshM::new(move |state| Name::new(state.borrow_mut().claim(&base)))
     }
 }
 
-/// Helper to run a FreshM computation
+/// Run a [`FreshM`] computation.
 pub fn run_fresh<T>(computation: FreshM<T>) -> T {
     computation.run_fresh()
 }

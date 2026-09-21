@@ -41,18 +41,7 @@ impl Subst<Ty> for Ty {
                 Box::new((**t1).subst(var, value)),
                 Box::new((**t2).subst(var, value)),
             ),
-            Ty::All(bnd) => {
-                let vars = bnd.pattern();
-                if vars.iter().any(|v| v == var) {
-                    // Variable is bound, no substitution
-                    self.clone()
-                } else {
-                    Ty::All(Bind::new(
-                        vars.clone(),
-                        Box::new((**bnd.body()).subst(var, value)),
-                    ))
-                }
-            }
+            Ty::All(bnd) => Ty::All(bnd.subst(var, value)),
         }
     }
 }
@@ -88,7 +77,7 @@ impl fmt::Display for Ty {
             Ty::TyVar(a) => write!(f, "{}", a),
             Ty::Arr(t1, t2) => write!(f, "({} → {})", t1, t2),
             Ty::All(bnd) => {
-                let vars = bnd.pattern();
+                let (vars, body) = bnd.unbind_ref();
                 write!(f, "∀")?;
                 for (i, v) in vars.iter().enumerate() {
                     if i > 0 {
@@ -96,29 +85,15 @@ impl fmt::Display for Ty {
                     }
                     write!(f, "{}", v)?;
                 }
-                write!(f, ". {}", bnd.body())
+                write!(f, ". {}", body)
             }
         }
     }
 }
 
 /// Embedded type annotation
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Alpha)]
 struct Embed<T>(T);
-
-impl<T: Alpha> Alpha for Embed<T> {
-    fn aeq(&self, other: &Self) -> bool {
-        self.0.aeq(&other.0)
-    }
-
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        self.0.aeq_in(ctx, &other.0)
-    }
-
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        self.0.fv_in(vars)
-    }
-}
 
 impl<T: Subst<V>, V> Subst<V> for Embed<T> {
     fn is_var(&self) -> Option<SubstName<V>> {
@@ -159,26 +134,8 @@ impl Subst<Tm> for Tm {
         match self {
             Tm::TmVar(v) if v == var => value.clone(),
             Tm::TmVar(v) => Tm::TmVar(v.clone()),
-            Tm::Lam(b) => {
-                let (x, ann) = b.pattern();
-                if x == var {
-                    // Variable is bound, no substitution
-                    self.clone()
-                } else {
-                    // Substitute in body
-                    Tm::Lam(Bind::new(
-                        (x.clone(), ann.clone()),
-                        Box::new((**b.body()).subst(var, value)),
-                    ))
-                }
-            }
-            Tm::TLam(b) => {
-                // Type variables can't capture term variables, so substitute in body
-                Tm::TLam(Bind::new(
-                    b.pattern().clone(),
-                    Box::new((**b.body()).subst(var, value)),
-                ))
-            }
+            Tm::Lam(b) => Tm::Lam(b.subst(var, value)),
+            Tm::TLam(b) => Tm::TLam(b.subst(var, value)),
             Tm::App(e1, e2) => Tm::App(
                 Box::new((**e1).subst(var, value)),
                 Box::new((**e2).subst(var, value)),
@@ -197,25 +154,8 @@ impl Subst<Ty> for Tm {
     fn subst(&self, var: &Name<Ty>, value: &Ty) -> Self {
         match self {
             Tm::TmVar(x) => Tm::TmVar(x.clone()),
-            Tm::Lam(b) => {
-                let (x, Embed(ty)) = b.pattern();
-                Tm::Lam(Bind::new(
-                    (x.clone(), Embed(ty.subst(var, value))),
-                    Box::new((**b.body()).subst(var, value)),
-                ))
-            }
-            Tm::TLam(b) => {
-                let vars = b.pattern();
-                if vars.iter().any(|v| v == var) {
-                    // Type variable is bound, no substitution
-                    self.clone()
-                } else {
-                    Tm::TLam(Bind::new(
-                        vars.clone(),
-                        Box::new((**b.body()).subst(var, value)),
-                    ))
-                }
-            }
+            Tm::Lam(b) => Tm::Lam(b.subst(var, value)),
+            Tm::TLam(b) => Tm::TLam(b.subst(var, value)),
             Tm::App(e1, e2) => Tm::App(
                 Box::new((**e1).subst(var, value)),
                 Box::new((**e2).subst(var, value)),
@@ -256,11 +196,11 @@ impl fmt::Display for Tm {
         match self {
             Tm::TmVar(x) => write!(f, "{}", x),
             Tm::Lam(bnd) => {
-                let (x, Embed(ty)) = bnd.pattern();
-                write!(f, "λ{}:{}. ...", x, ty)
+                let ((x, Embed(ty)), body) = bnd.unbind_ref();
+                write!(f, "λ{}:{}. {}", x, ty, body)
             }
             Tm::TLam(bnd) => {
-                let vars = bnd.pattern();
+                let (vars, body) = bnd.unbind_ref();
                 write!(f, "Λ")?;
                 for (i, v) in vars.iter().enumerate() {
                     if i > 0 {
@@ -268,7 +208,7 @@ impl fmt::Display for Tm {
                     }
                     write!(f, "{}", v)?;
                 }
-                write!(f, ". ...")
+                write!(f, ". {}", body)
             }
             Tm::App(t1, t2) => write!(f, "({} {})", t1, t2),
             Tm::TApp(t, tys) => {

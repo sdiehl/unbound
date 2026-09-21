@@ -1,34 +1,75 @@
-//! Binding construct for representing name binding in terms
+//! The binding construct.
 
 use std::fmt;
 
-/// A binding construct that binds a name within a term
-#[derive(Clone, Debug, PartialEq)]
+use crate::alpha::{Alpha, Pattern};
+
+/// A pattern binding its names in a body.
+///
+/// The body is stored *closed*: on construction every free occurrence of a
+/// name the pattern binds is replaced by a de Bruijn coordinate. That is
+/// what makes alpha equivalence structural and substitution incapable of
+/// capture, and it is why the body should be reached through [`unbind`]
+/// rather than [`body`].
+///
+/// [`unbind`]: Bind::unbind
+/// [`body`]: Bind::body
+#[derive(Clone, Debug)]
 pub struct Bind<P, T> {
     pattern: P,
     body: T,
 }
 
-impl<P, T> Bind<P, T> {
-    /// Create a new binding
-    pub fn new(pattern: P, body: T) -> Self {
+impl<P: Pattern, T: Alpha> Bind<P, T> {
+    /// Bind the pattern's names in `body`, closing the body over them.
+    pub fn new(pattern: P, mut body: T) -> Self {
+        body.close(0, &pattern.binders());
         Bind { pattern, body }
     }
 
-    /// Unbind a binding, returning the pattern and body
-    /// This should be used within FreshM to get fresh names
+    /// Open the binding, giving the pattern and body fresh binder names.
+    ///
+    /// Each call produces names distinct from every other name in the
+    /// program, so repeatedly unbinding the same term never aliases.
     pub fn unbind(self) -> (P, T) {
-        (self.pattern, self.body)
+        let (pattern, names) = self.pattern.freshen();
+        let mut body = self.body;
+        body.open(0, &names);
+        (pattern, body)
     }
 
-    /// Get a reference to the pattern
+    /// Open the binding without consuming it.
+    pub fn unbind_ref(&self) -> (P, T)
+    where
+        P: Clone,
+        T: Clone, {
+        self.clone().unbind()
+    }
+}
+
+impl<P, T> Bind<P, T> {
+    /// Assemble a binding from parts that are already closed.
+    pub(crate) fn from_parts(pattern: P, body: T) -> Self {
+        Bind { pattern, body }
+    }
+
+    /// The pattern, whose binder names are arbitrary until unbound.
     pub fn pattern(&self) -> &P {
         &self.pattern
     }
 
-    /// Get a reference to the body
+    /// The closed body. Bound variables appear as de Bruijn coordinates, so
+    /// prefer [`unbind`](Bind::unbind) unless you mean to inspect that form.
     pub fn body(&self) -> &T {
         &self.body
+    }
+
+    pub(crate) fn pattern_mut(&mut self) -> &mut P {
+        &mut self.pattern
+    }
+
+    pub(crate) fn body_mut(&mut self) -> &mut T {
+        &mut self.body
     }
 }
 

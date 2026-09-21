@@ -1,140 +1,112 @@
-//! Alpha equivalence for terms with binding
+//! Alpha equivalence, and the closing and opening operations it rests on.
+//!
+//! A term is kept in *locally nameless* form: free variables are named,
+//! variables bound by an enclosing [`Bind`] are de Bruijn coordinates. Two
+//! terms are then alpha-equivalent exactly when they are structurally equal,
+//! so [`Alpha::aeq`] needs no renaming context.
+//!
+//! [`Bind`]: crate::Bind
 
-use std::collections::HashMap;
-
+use crate::name::AnyName;
 use crate::{Bind, Name};
 
-/// Trait for types that support alpha equivalence
+/// Terms that contain names and can be compared up to alpha equivalence.
+///
+/// Derive this rather than writing it by hand.
 pub trait Alpha {
-    /// Check if two terms are alpha-equivalent
+    /// Whether two terms are alpha-equivalent.
     fn aeq(&self, other: &Self) -> bool;
 
-    /// Check alpha equivalence with a renaming context
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        // Default implementation just calls aeq
-        let _ = ctx;
-        self.aeq(other)
-    }
+    /// Abstract `names` into bound variables at de Bruijn `level`.
+    ///
+    /// `level` counts binders outwards from the one doing the abstracting,
+    /// and a name's position in `names` becomes its position in the binder.
+    fn close(&mut self, level: usize, names: &[AnyName]);
 
-    /// Collect free variables
-    fn fv(&self) -> Vec<String> {
-        let mut vars = Vec::new();
-        self.fv_in(&mut vars);
-        vars
-    }
+    /// Replace variables bound at de Bruijn `level` with `names`.
+    ///
+    /// The inverse of [`Alpha::close`].
+    fn open(&mut self, level: usize, names: &[AnyName]);
 
-    /// Collect free variables into a vector
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        let _ = vars;
-        // Default implementation does nothing
-    }
-}
+    /// Collect the free names of this term into `acc`, without duplicates.
+    fn fv_in(&self, acc: &mut Vec<AnyName>);
 
-/// Context for alpha equivalence checking
-#[derive(Debug, Clone)]
-pub struct AlphaCtx {
-    left_mapping: HashMap<usize, usize>,
-    right_mapping: HashMap<usize, usize>,
-    next_fresh: usize,
-}
-
-impl AlphaCtx {
-    /// Create a new empty context
-    pub fn new() -> Self {
-        AlphaCtx {
-            left_mapping: HashMap::new(),
-            right_mapping: HashMap::new(),
-            next_fresh: 0,
-        }
-    }
-
-    /// Bind two names to a fresh identifier
-    pub fn bind<T>(&mut self, left: &Name<T>, right: &Name<T>) -> (usize, usize) {
-        let fresh = self.next_fresh;
-        self.next_fresh += 1;
-
-        let old_left = self.left_mapping.insert(left.index(), fresh);
-        let old_right = self.right_mapping.insert(right.index(), fresh);
-
-        (
-            old_left.unwrap_or(left.index()),
-            old_right.unwrap_or(right.index()),
-        )
-    }
-
-    /// Unbind names (restore old mappings)
-    pub fn unbind<T>(&mut self, left: &Name<T>, right: &Name<T>, old: (usize, usize)) {
-        if old.0 == left.index() {
-            self.left_mapping.remove(&left.index());
-        } else {
-            self.left_mapping.insert(left.index(), old.0);
-        }
-
-        if old.1 == right.index() {
-            self.right_mapping.remove(&right.index());
-        } else {
-            self.right_mapping.insert(right.index(), old.1);
-        }
-    }
-
-    /// Look up a name in the left mapping
-    pub fn lookup_left<T>(&self, name: &Name<T>) -> usize {
-        self.left_mapping
-            .get(&name.index())
-            .copied()
-            .unwrap_or(name.index())
-    }
-
-    /// Look up a name in the right mapping
-    pub fn lookup_right<T>(&self, name: &Name<T>) -> usize {
-        self.right_mapping
-            .get(&name.index())
-            .copied()
-            .unwrap_or(name.index())
+    /// The free names of this term, in order of first occurrence.
+    fn fv(&self) -> Vec<AnyName> {
+        let mut acc = Vec::new();
+        self.fv_in(&mut acc);
+        acc
     }
 }
 
-impl Default for AlphaCtx {
-    fn default() -> Self {
-        Self::new()
+/// Patterns that a [`Bind`] can abstract over.
+///
+/// A pattern supplies the names it binds, and knows how to treat its own
+/// binders differently from any annotations it carries: annotations sit
+/// outside the scope of the binder, so they are closed and opened at the
+/// enclosing level and contribute to the free names of the whole binding.
+///
+/// [`Bind`]: crate::Bind
+pub trait Pattern: Sized {
+    /// The names this pattern binds, in binding order.
+    fn binders(&self) -> Vec<AnyName>;
+
+    /// A copy of this pattern with freshly indexed binders, and those names.
+    fn freshen(&self) -> (Self, Vec<AnyName>);
+
+    /// Compare two patterns ignoring binder identity, which alpha
+    /// equivalence is free to rename.
+    fn pattern_aeq(&self, other: &Self) -> bool;
+
+    /// Collect the free names of the pattern's annotations, not its binders.
+    fn pattern_fv(&self, acc: &mut Vec<AnyName>);
+
+    /// Close the pattern's annotations, leaving its binders alone.
+    fn pattern_close(&mut self, level: usize, names: &[AnyName]);
+
+    /// Open the pattern's annotations, leaving its binders alone.
+    fn pattern_open(&mut self, level: usize, names: &[AnyName]);
+}
+
+/// Push `name` onto `acc` unless an equal name is already there.
+fn push_unique(acc: &mut Vec<AnyName>, name: AnyName) {
+    if !acc.contains(&name) {
+        acc.push(name);
     }
 }
 
-// Implement Alpha for Name
 impl<T> Alpha for Name<T> {
     fn aeq(&self, other: &Self) -> bool {
-        self.index() == other.index()
+        self == other
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        ctx.lookup_left(self) == ctx.lookup_right(other)
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        self.close_name(level, names);
     }
 
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        if !vars.contains(&self.string().to_string()) {
-            vars.push(self.string().to_string());
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.open_name(level, names);
+    }
+
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        if let Some(any) = self.to_any() {
+            push_unique(acc, any);
         }
     }
 }
 
-// Implement Alpha for basic types
-impl Alpha for String {
-    fn aeq(&self, other: &Self) -> bool {
-        self == other
-    }
+macro_rules! alpha_atom {
+    ($($ty:ty),* $(,)?) => {$(
+        impl Alpha for $ty {
+            fn aeq(&self, other: &Self) -> bool { self == other }
+            fn close(&mut self, _level: usize, _names: &[AnyName]) {}
+            fn open(&mut self, _level: usize, _names: &[AnyName]) {}
+            fn fv_in(&self, _acc: &mut Vec<AnyName>) {}
+        }
+    )*};
 }
 
-impl Alpha for usize {
-    fn aeq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
-impl Alpha for i32 {
-    fn aeq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
+alpha_atom!(bool, char, String, u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
 impl<T: Alpha> Alpha for Option<T> {
     fn aeq(&self, other: &Self) -> bool {
@@ -145,155 +117,212 @@ impl<T: Alpha> Alpha for Option<T> {
         }
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        match (self, other) {
-            (None, None) => true,
-            (Some(a), Some(b)) => a.aeq_in(ctx, b),
-            _ => false,
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        if let Some(x) = self {
+            x.close(level, names);
+        }
+    }
+
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        if let Some(x) = self {
+            x.open(level, names);
+        }
+    }
+
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        if let Some(x) = self {
+            x.fv_in(acc);
         }
     }
 }
 
 impl<T: Alpha> Alpha for Vec<T> {
     fn aeq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a.aeq(b))
+        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a.aeq(b))
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a.aeq_in(ctx, b))
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        for x in self {
+            x.close(level, names);
+        }
+    }
+
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        for x in self {
+            x.open(level, names);
+        }
+    }
+
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        for x in self {
+            x.fv_in(acc);
+        }
     }
 }
 
 impl<T: Alpha> Alpha for Box<T> {
     fn aeq(&self, other: &Self) -> bool {
-        (**self).aeq(&**other)
+        (**self).aeq(other)
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        (**self).aeq_in(ctx, &**other)
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        (**self).close(level, names);
     }
 
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        (**self).fv_in(vars)
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        (**self).open(level, names);
+    }
+
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        (**self).fv_in(acc);
     }
 }
 
-// Implementation for tuples
 impl<A: Alpha, B: Alpha> Alpha for (A, B) {
     fn aeq(&self, other: &Self) -> bool {
         self.0.aeq(&other.0) && self.1.aeq(&other.1)
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        self.0.aeq_in(ctx, &other.0) && self.1.aeq_in(ctx, &other.1)
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        self.0.close(level, names);
+        self.1.close(level, names);
     }
 
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        self.0.fv_in(vars);
-        self.1.fv_in(vars);
-    }
-}
-
-// Specialized implementation for Bind where pattern is Name (most common case)
-impl<T: Alpha> Alpha for Bind<Name<T>, Box<T>> {
-    fn aeq(&self, other: &Self) -> bool {
-        let mut ctx = AlphaCtx::new();
-        self.aeq_in(&mut ctx, other)
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.0.open(level, names);
+        self.1.open(level, names);
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        // Bind the names
-        let old = ctx.bind(self.pattern(), other.pattern());
-        // Check bodies with binding
-        let result = self.body().aeq_in(ctx, other.body());
-        // Restore
-        ctx.unbind(self.pattern(), other.pattern(), old);
-        result
-    }
-
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        self.body().fv_in(vars);
-        vars.retain(|v| v != self.pattern().string());
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        self.0.fv_in(acc);
+        self.1.fv_in(acc);
     }
 }
 
-// Implementation for Bind with Vec<Name> pattern (general case for any body
-// type)
-impl<T: Alpha, U: Alpha> Alpha for Bind<Vec<Name<T>>, Box<U>> {
+/// A binding is alpha-equivalent to another when their annotations match and
+/// their closed bodies are structurally equal. Binder names play no part.
+impl<P: Pattern, T: Alpha> Alpha for Bind<P, T> {
     fn aeq(&self, other: &Self) -> bool {
-        let mut ctx = AlphaCtx::new();
-        self.aeq_in(&mut ctx, other)
+        self.pattern().pattern_aeq(other.pattern()) && self.body().aeq(other.body())
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        let pattern1 = self.pattern();
-        let pattern2 = other.pattern();
-
-        if pattern1.len() != pattern2.len() {
-            return false;
-        }
-
-        // Bind all names
-        let old_bindings: Vec<_> = pattern1
-            .iter()
-            .zip(pattern2.iter())
-            .map(|(n1, n2)| ctx.bind(n1, n2))
-            .collect();
-
-        // Check bodies
-        let result = self.body().aeq_in(ctx, other.body());
-
-        // Restore
-        for ((n1, n2), old) in pattern1.iter().zip(pattern2.iter()).zip(old_bindings) {
-            ctx.unbind(n1, n2, old);
-        }
-
-        result
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        self.pattern_mut().pattern_close(level, names);
+        self.body_mut().close(level + 1, names);
     }
 
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        self.body().fv_in(vars);
-        let bound_names: Vec<String> = self
-            .pattern()
-            .iter()
-            .map(|n| n.string().to_string())
-            .collect();
-        vars.retain(|v| !bound_names.contains(v));
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.pattern_mut().pattern_open(level, names);
+        self.body_mut().open(level + 1, names);
+    }
+
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        self.pattern().pattern_fv(acc);
+        self.body().fv_in(acc);
     }
 }
 
-// Implementation for Bind with tuple pattern (Name, Extra)
-impl<T: Alpha, U: Alpha> Alpha for Bind<(Name<T>, U), Box<T>> {
-    fn aeq(&self, other: &Self) -> bool {
-        let mut ctx = AlphaCtx::new();
-        self.aeq_in(&mut ctx, other)
+/// A single binder.
+impl<T> Pattern for Name<T> {
+    fn binders(&self) -> Vec<AnyName> {
+        self.to_any().into_iter().collect()
     }
 
-    fn aeq_in(&self, ctx: &mut AlphaCtx, other: &Self) -> bool {
-        let (name1, extra1) = self.pattern();
-        let (name2, extra2) = other.pattern();
-
-        // Check extra data
-        if !extra1.aeq_in(ctx, extra2) {
-            return false;
-        }
-
-        // Bind the name
-        let old = ctx.bind(name1, name2);
-
-        // Check bodies
-        let result = self.body().aeq_in(ctx, other.body());
-
-        // Restore
-        ctx.unbind(name1, name2, old);
-
-        result
+    fn freshen(&self) -> (Self, Vec<AnyName>) {
+        let fresh = Name::freshen(self);
+        let names = fresh.to_any().into_iter().collect();
+        (fresh, names)
     }
 
-    fn fv_in(&self, vars: &mut Vec<String>) {
-        let (name, extra) = self.pattern();
-        extra.fv_in(vars);
-        self.body().fv_in(vars);
-        vars.retain(|v| v != name.string());
+    fn pattern_aeq(&self, _other: &Self) -> bool {
+        true
+    }
+
+    fn pattern_fv(&self, _acc: &mut Vec<AnyName>) {}
+
+    fn pattern_close(&mut self, _level: usize, _names: &[AnyName]) {}
+
+    fn pattern_open(&mut self, _level: usize, _names: &[AnyName]) {}
+}
+
+/// A telescope of binders, bound simultaneously.
+impl<T> Pattern for Vec<Name<T>> {
+    fn binders(&self) -> Vec<AnyName> {
+        self.iter().filter_map(|n| n.to_any()).collect()
+    }
+
+    fn freshen(&self) -> (Self, Vec<AnyName>) {
+        let fresh: Vec<Name<T>> = self.iter().map(Name::freshen).collect();
+        let names = fresh.iter().filter_map(|n| n.to_any()).collect();
+        (fresh, names)
+    }
+
+    fn pattern_aeq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+    }
+
+    fn pattern_fv(&self, _acc: &mut Vec<AnyName>) {}
+
+    fn pattern_close(&mut self, _level: usize, _names: &[AnyName]) {}
+
+    fn pattern_open(&mut self, _level: usize, _names: &[AnyName]) {}
+}
+
+/// A binder carrying an annotation, such as a type ascription. The
+/// annotation is outside the binder's own scope.
+impl<T, U: Alpha + Clone> Pattern for (Name<T>, U) {
+    fn binders(&self) -> Vec<AnyName> {
+        self.0.to_any().into_iter().collect()
+    }
+
+    fn freshen(&self) -> (Self, Vec<AnyName>) {
+        let fresh = Name::freshen(&self.0);
+        let names = fresh.to_any().into_iter().collect();
+        ((fresh, self.1.clone()), names)
+    }
+
+    fn pattern_aeq(&self, other: &Self) -> bool {
+        self.1.aeq(&other.1)
+    }
+
+    fn pattern_fv(&self, acc: &mut Vec<AnyName>) {
+        self.1.fv_in(acc);
+    }
+
+    fn pattern_close(&mut self, level: usize, names: &[AnyName]) {
+        self.1.close(level, names);
+    }
+
+    fn pattern_open(&mut self, level: usize, names: &[AnyName]) {
+        self.1.open(level, names);
+    }
+}
+
+/// A telescope of binders carrying an annotation.
+impl<T, U: Alpha + Clone> Pattern for (Vec<Name<T>>, U) {
+    fn binders(&self) -> Vec<AnyName> {
+        self.0.iter().filter_map(|n| n.to_any()).collect()
+    }
+
+    fn freshen(&self) -> (Self, Vec<AnyName>) {
+        let fresh: Vec<Name<T>> = self.0.iter().map(Name::freshen).collect();
+        let names = fresh.iter().filter_map(|n| n.to_any()).collect();
+        ((fresh, self.1.clone()), names)
+    }
+
+    fn pattern_aeq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.1.aeq(&other.1)
+    }
+
+    fn pattern_fv(&self, acc: &mut Vec<AnyName>) {
+        self.1.fv_in(acc);
+    }
+
+    fn pattern_close(&mut self, level: usize, names: &[AnyName]) {
+        self.1.close(level, names);
+    }
+
+    fn pattern_open(&mut self, level: usize, names: &[AnyName]) {
+        self.1.open(level, names);
     }
 }

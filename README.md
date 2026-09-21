@@ -27,25 +27,37 @@ enum Expr {
 
 ### Phantom Types
 
-The `Name<T>` type uses phantom type parameters to ensure type safety at the binding level. The phantom parameter `T` represents the type of AST that can contain this name as a variable:
+The `Name<T>` type uses a phantom parameter to record which AST a name can stand for:
 
 ```rust
 pub struct Name<T> {
-    string: String,      // Human-readable identifier
-    index: usize,        // Globally unique index via AtomicUsize
+    repr: Repr,             // free (string + unique index), or bound (de Bruijn)
     _phantom: PhantomData<T>,
 }
 ```
 
-This prevents mixing names from different AST types - a `Name<Expr>` cannot be confused with a `Name<Type>` at compile time, despite having identical runtime representations. The phantom type has zero runtime cost while providing complete type safety.
+This prevents mixing names from different AST types - a `Name<Expr>` cannot be confused with a `Name<Ty>` at compile time, despite having identical runtime representations. The phantom type has zero runtime cost while providing complete type safety.
 
 ### Locally Nameless Representation
 
-Names are compared by their globally unique index, not their string representation. This makes alpha-equivalence trivial for free variables (same index = same variable) while the `Bind<P, T>` type handles the complexity of bound variables:
+A name is either **free**, carrying a globally unique index drawn from a process-wide `AtomicUsize`, or **bound**, carrying the de Bruijn coordinates `(level, position)` assigned when an enclosing binder closed over it. `level` counts binders outwards from the innermost one; `position` distinguishes names bound simultaneously by the same pattern.
 
-- During `Alpha` checking, bound names are pushed onto a context stack with their corresponding names from the compared term
-- The `AlphaCtx` maintains a bijection between names in the two terms being compared
-- When encountering a variable, we check if it's bound (exists in context) or free (compare indices directly)
+`Bind<P, T>` maintains that form:
+
+- `Bind::new` **closes** the body, rewriting every free occurrence of a name the pattern binds into a coordinate
+- `Bind::unbind` **opens** it again, drawing genuinely fresh names from the same global counter
+
+So `\x. \y. x y` is stored as `\. \. #1.0 #0.0`, and the binder's own name is inert decoration. Three properties fall out:
+
+- **Alpha equivalence is structural equality.** `aeq` walks both terms in lockstep with no renaming context and no allocation, since alpha-variants have identical de Bruijn bodies
+- **Substitution cannot capture.** A bound variable has no name for an incoming term to collide with, so `subst` needs neither freshening nor a shadowing check
+- **Free variables are exact.** `fv` collects only genuinely free names, compared by index, so two distinct variables that happen to share a spelling are never conflated
+
+Because the body is stored closed, reach for it through `unbind` (or `unbind_ref`) rather than `body`, which hands back the raw de Bruijn form.
+
+### Patterns
+
+The `Pattern` trait says what a binder abstracts over. Implementations are provided for a single `Name<T>`, a `Vec<Name<T>>` bound simultaneously, and either of those paired with an annotation, as in `Bind<(Name<Tm>, Embed<Ty>), Box<Tm>>`. An annotation sits *outside* the scope of the binder it decorates, so it is closed at the enclosing level and contributes to the free variables of the whole binding.
 
 ### Capture-Avoiding Substitution
 
@@ -58,24 +70,17 @@ trait Subst<V> {
 }
 ```
 
-The derive macro generates `subst` implementations that:
-
-1. Check if the current term `is_var` matching the substitution target
-2. Traverse the AST, tracking which names are bound by `Bind` constructs
-3. Skip substitution under binders that capture the variable being substituted
-4. Recursively apply substitution to subterms
+The derive macro treats a variant named `V`, `Var` or `Variable`, or one marked `#[subst_var]`, as the variable case and generates a plain structural traversal for everything else. Binders need no special handling: a locally closed `value` can be moved under any number of binders without disturbing it.
 
 ### Fresh Name Generation
 
-The `FreshM<T>` context threads a `FreshState` containing a counter and a map of "hints" for generating human-readable names. It's implemented as a closure that takes the state:
+Freshness is guaranteed by the global counter, so `unbind` is safe anywhere and needs no context. What `FreshM<T>` adds is *readable* freshness: it tracks which spellings are already in play and suffixes new ones, turning a second `x` into `x1` rather than another `x` distinguishable only by index.
 
 ```rust
 pub struct FreshM<T> {
     computation: Box<dyn FnOnce(Rc<RefCell<FreshState>>) -> T>,
 }
 ```
-
-This allows `unbind` operations to generate fresh names when opening binders, ensuring no accidental capture during substitution operations.
 
 ## License
 
