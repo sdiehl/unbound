@@ -6,6 +6,8 @@
 //! is therefore a plain traversal with no freshening and no shadowing check.
 
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{Bind, Name};
 
@@ -81,15 +83,21 @@ impl<T: Subst<V>, V> Subst<V> for Vec<T> {
     }
 }
 
-impl<T: Subst<V>, V> Subst<V> for Box<T> {
-    fn is_var(&self) -> Option<SubstName<V>> {
-        (**self).is_var()
-    }
+macro_rules! subst_pointer {
+    ($($ptr:ident),* $(,)?) => {$(
+        impl<T: Subst<V>, V> Subst<V> for $ptr<T> {
+            fn is_var(&self) -> Option<SubstName<V>> {
+                (**self).is_var()
+            }
 
-    fn subst(&self, var: &Name<V>, value: &V) -> Self {
-        Box::new((**self).subst(var, value))
-    }
+            fn subst(&self, var: &Name<V>, value: &V) -> Self {
+                $ptr::new((**self).subst(var, value))
+            }
+        }
+    )*};
 }
+
+subst_pointer!(Box, Rc, Arc);
 
 impl<A: Subst<V>, B: Subst<V>, V> Subst<V> for (A, B) {
     fn is_var(&self) -> Option<SubstName<V>> {

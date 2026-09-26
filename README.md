@@ -57,7 +57,9 @@ Because the body is stored closed, reach for it through `unbind` (or `unbind_ref
 
 ### Patterns
 
-The `Pattern` trait says what a binder abstracts over. Implementations are provided for a single `Name<T>`, a `Vec<Name<T>>` bound simultaneously, and either of those paired with an annotation, as in `Bind<(Name<Tm>, Embed<Ty>), Box<Tm>>`. An annotation sits *outside* the scope of the binder it decorates, so it is closed at the enclosing level and contributes to the free variables of the whole binding.
+The `Pattern` trait says what a binder abstracts over. Implementations are provided for a single `Name<T>`, a `Vec<Name<T>>` bound simultaneously, and either of those paired with an annotation, as in `Bind<(Name<Tm>, Ty), Box<Tm>>`. An annotation sits *outside* the scope of the binder it decorates, so it is closed at the enclosing level and contributes to the free variables of the whole binding.
+
+Children may be held in a `Box`, `Rc` or `Arc`. Shared pointers are copy on write, so closing or opening a term never disturbs another owner of the same subtree.
 
 ### Capture-Avoiding Substitution
 

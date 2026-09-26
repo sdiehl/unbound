@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `Alpha` and `Subst` for `Rc<T>` and `Arc<T>`, so ASTs built on shared
+  pointers can derive both traits. Closing and opening are copy on write via
+  `make_mut`, and `aeq` short-circuits on pointer equality.
+
 ## [0.2.0] - 2026-09-21
 
 The representation is now genuinely locally nameless. Previously names were

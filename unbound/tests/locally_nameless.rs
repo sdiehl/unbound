@@ -171,3 +171,52 @@ fn closing_and_opening_round_trip() {
         "unbind then rebind must be the identity"
     );
 }
+
+/// The same calculus over shared pointers.
+mod shared {
+    use std::rc::Rc;
+
+    use unbound::prelude::*;
+
+    #[derive(Clone, Debug, Alpha, Subst)]
+    enum Expr {
+        V(Name<Expr>),
+        Lam(Bind<Name<Expr>, Rc<Expr>>),
+        App(Rc<Expr>, Rc<Expr>),
+    }
+
+    fn lam(v: &Name<Expr>, body: Expr) -> Expr {
+        Expr::Lam(bind(v.clone(), Rc::new(body)))
+    }
+
+    #[test]
+    fn rc_terms_are_alpha_equivalent_and_substitute_without_capture() {
+        let x: Name<Expr> = s2n("x");
+        let y: Name<Expr> = s2n("y");
+        assert!(lam(&x, Expr::V(x.clone())).aeq(&lam(&y, Expr::V(y.clone()))));
+
+        // (\y. x)[x := y] must not become the identity.
+        let k = lam(&y, Expr::V(x.clone()));
+        let out = k.subst(&x, &Expr::V(y.clone()));
+        assert!(!out.aeq(&lam(&y, Expr::V(y.clone()))));
+    }
+
+    #[test]
+    fn opening_a_shared_body_leaves_other_owners_closed() {
+        let x: Name<Expr> = s2n("x");
+        let shared = Rc::new(lam(
+            &x,
+            Expr::App(Rc::new(Expr::V(x.clone())), Rc::new(Expr::V(x.clone()))),
+        ));
+        let alias = Rc::clone(&shared);
+        let Expr::Lam(b) = &*shared else {
+            unreachable!()
+        };
+        let (x2, body) = b.unbind_ref();
+        assert!(body.fv().iter().any(|n| n.index() == x2.index().unwrap()));
+        let Expr::Lam(b) = &*alias else {
+            unreachable!()
+        };
+        assert!(b.body().fv().is_empty());
+    }
+}

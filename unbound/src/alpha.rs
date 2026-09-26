@@ -7,6 +7,9 @@
 //!
 //! [`Bind`]: crate::Bind
 
+use std::rc::Rc;
+use std::sync::Arc;
+
 use crate::name::AnyName;
 use crate::{Bind, Name};
 
@@ -177,6 +180,32 @@ impl<T: Alpha> Alpha for Box<T> {
         (**self).fv_in(acc);
     }
 }
+
+/// Shared pointers are copy on write: closing or opening a node that is
+/// shared clones it first, so other owners never observe the change.
+macro_rules! alpha_shared {
+    ($($ptr:ident),* $(,)?) => {$(
+        impl<T: Alpha + Clone> Alpha for $ptr<T> {
+            fn aeq(&self, other: &Self) -> bool {
+                $ptr::ptr_eq(self, other) || (**self).aeq(other)
+            }
+
+            fn close(&mut self, level: usize, names: &[AnyName]) {
+                $ptr::make_mut(self).close(level, names);
+            }
+
+            fn open(&mut self, level: usize, names: &[AnyName]) {
+                $ptr::make_mut(self).open(level, names);
+            }
+
+            fn fv_in(&self, acc: &mut Vec<AnyName>) {
+                (**self).fv_in(acc);
+            }
+        }
+    )*};
+}
+
+alpha_shared!(Rc, Arc);
 
 impl<A: Alpha, B: Alpha> Alpha for (A, B) {
     fn aeq(&self, other: &Self) -> bool {
