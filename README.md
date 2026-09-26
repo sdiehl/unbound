@@ -53,7 +53,11 @@ So `\x. \y. x y` is stored as `\. \. #1.0 #0.0`, and the binder's own name is in
 - **Substitution cannot capture.** A bound variable has no name for an incoming term to collide with, so `subst` needs neither freshening nor a shadowing check
 - **Free variables are exact.** `fv` collects only genuinely free names, compared by index, so two distinct variables that happen to share a spelling are never conflated
 
-Because the body is stored closed, reach for it through `unbind` (or `unbind_ref`) rather than `body`, which hands back the raw de Bruijn form.
+Because the body is stored closed, reach for it through `unbind` (or `unbind_ref`) rather than `body`, which hands back the raw de Bruijn form. To substitute straight into the body instead, as beta reduction or type instantiation does, use `instantiate(&value)`, or `instantiate_all(&values)` for a pattern binding several names.
+
+### Parsing
+
+A parser can resolve scope with no separate pass. `Name::global("x")` returns the same name for every call with the same spelling, and `Bind::new` captures only the occurrences still free in its body, so building the term bottom-up with global names gives every occurrence its nearest enclosing binder. Names made with `s2n` are always distinct from global ones.
 
 ### Patterns
 
@@ -73,6 +77,12 @@ trait Subst<V> {
 ```
 
 The derive macro treats a variant named `V`, `Var` or `Variable`, or one marked `#[subst_var]`, as the variable case and generates a plain structural traversal for everything else. Binders need no special handling: a locally closed `value` can be moved under any number of binders without disturbing it.
+
+By default a type substitutes into itself. `#[subst(Ty)]` derives `Subst<Ty>` instead, so a term can take substitutions for the types it mentions, and `#[subst(Self, Ty)]` derives both. A type with no variables of its own, such as the kinds annotating a type binder, takes `#[subst(_)]`, which derives `Subst<V>` for every `V`.
+
+### Printing
+
+`Display` on a name shows its spelling, which need not be unique; `Debug` shows the index too. To print whole terms unambiguously, thread a `NameScope` through the printer. It starts from the term's free names, suffixing any that share a spelling. At each binder, `bind(&name, &body.fv())` picks a spelling and renames only when the plain spelling would capture a name the body actually uses. `get(&name)` gives the spelling for an occurrence, and `pop` leaves the scope. The output reads back as an alpha-equivalent term.
 
 ### Fresh Name Generation
 

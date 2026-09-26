@@ -12,6 +12,7 @@
 //! - **Automatic alpha equivalence** via the [`Alpha`] trait (derivable)
 //! - **Capture-avoiding substitution** via the [`Subst`] trait (derivable)
 //! - **Readable fresh names** via the [`FreshM`] context
+//! - **Printing without capture** via [`NameScope`]
 //!
 //! # Quick Start
 //!
@@ -43,6 +44,7 @@ mod bind;
 mod fresh;
 mod helpers;
 mod name;
+mod scope;
 mod subst;
 
 pub use alpha::{Alpha, Pattern};
@@ -50,6 +52,7 @@ pub use bind::Bind;
 pub use fresh::{run_fresh, Fresh, FreshM, FreshState};
 pub use helpers::{bind, s2n};
 pub use name::{AnyName, Name};
+pub use scope::NameScope;
 pub use subst::{Subst, SubstName};
 pub use unbound_derive::{Alpha, Subst};
 
@@ -62,5 +65,6 @@ pub mod prelude {
     pub use crate::fresh::{run_fresh, Fresh, FreshM};
     pub use crate::helpers::{bind, s2n};
     pub use crate::name::{AnyName, Name};
+    pub use crate::scope::NameScope;
     pub use crate::subst::{Subst, SubstName};
 }

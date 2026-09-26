@@ -164,38 +164,79 @@ fn traversal_body(data: &Data, method: &Ident, args: TokenStream2) -> TokenStrea
     }
 }
 
-/// Derive the `Subst` trait for an AST substituting into itself.
+/// Derive the `Subst` trait.
 ///
-/// A variant named `V`, `Var` or `Variable` holding a single `Name` is taken
-/// to be the variable case. Binders need no special treatment: a closed body
-/// has no name for an incoming term to capture.
-#[proc_macro_derive(Subst, attributes(subst_var))]
+/// By default the type substitutes into itself, and a variant named `V`,
+/// `Var` or `Variable` (or marked `#[subst_var]`) holding a single `Name` is
+/// taken to be the variable case. `#[subst(Ty, ...)]` instead derives
+/// `Subst<Ty>` for each listed type, so a term can take substitutions for
+/// the types it mentions; list `Self` to keep the self-substitution too.
+/// `#[subst(_)]` derives `Subst<V>` for every `V`, which suits a type with
+/// no variables of its own, such as the kinds annotating a type binder.
+/// Binders need no special treatment: a closed body has no name for an
+/// incoming term to capture.
+#[proc_macro_derive(Subst, attributes(subst_var, subst))]
 pub fn derive_subst(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let self_ty: syn::Type = syn::parse_quote!(#name #ty_generics);
 
-    let (is_var, subst) = subst_bodies(&input.data);
-
-    quote! {
-        impl #impl_generics unbound::Subst<#name #ty_generics> for #name #ty_generics #where_clause {
-            fn is_var(&self) -> Option<unbound::SubstName<#name #ty_generics>> {
-                #is_var
-            }
-
-            fn subst(
-                &self,
-                var: &unbound::Name<#name #ty_generics>,
-                value: &#name #ty_generics,
-            ) -> Self {
-                #subst
-            }
+    let mut targets = Vec::new();
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("subst")) {
+        match attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Type, syn::Token![,]>::parse_terminated,
+        ) {
+            Ok(tys) => targets.extend(tys),
+            Err(e) => return e.to_compile_error().into(),
         }
     }
-    .into()
+    if targets.is_empty() {
+        targets.push(syn::parse_quote!(Self));
+    }
+
+    let mut any_generics = input.generics.clone();
+    any_generics.params.push(syn::parse_quote!(__V));
+    let (any_impl_generics, _, _) = any_generics.split_for_impl();
+
+    let impls = targets.into_iter().map(|target| {
+        if let syn::Type::Infer(_) = target {
+            let (is_var, subst) = subst_bodies(&input.data, false);
+            return quote! {
+                impl #any_impl_generics unbound::Subst<__V> for #name #ty_generics #where_clause {
+                    fn is_var(&self) -> Option<unbound::SubstName<__V>> {
+                        #is_var
+                    }
+
+                    fn subst(&self, var: &unbound::Name<__V>, value: &__V) -> Self {
+                        #subst
+                    }
+                }
+            };
+        }
+        let is_self = matches!(&target, syn::Type::Path(p)
+            if p.qself.is_none() && (p.path.is_ident("Self") || p.path.is_ident(name)));
+        let target = if is_self { self_ty.clone() } else { target };
+        let (is_var, subst) = subst_bodies(&input.data, is_self);
+        quote! {
+            impl #impl_generics unbound::Subst<#target> for #name #ty_generics #where_clause {
+                fn is_var(&self) -> Option<unbound::SubstName<#target>> {
+                    #is_var
+                }
+
+                fn subst(&self, var: &unbound::Name<#target>, value: &#target) -> Self {
+                    #subst
+                }
+            }
+        }
+    });
+
+    quote!(#(#impls)*).into()
 }
 
-fn subst_bodies(data: &Data) -> (TokenStream2, TokenStream2) {
+/// The `is_var` and `subst` bodies, recognising a variable case only when
+/// substituting into the type itself.
+fn subst_bodies(data: &Data, is_self: bool) -> (TokenStream2, TokenStream2) {
     match data {
         Data::Struct(s) => {
             let fields = struct_fields(&s.fields, quote!(self));
@@ -217,15 +258,18 @@ fn subst_bodies(data: &Data) -> (TokenStream2, TokenStream2) {
             (quote!(None), build)
         }
         Data::Enum(e) => {
-            let var_variant = e
-                .variants
-                .iter()
-                .find(|v| v.attrs.iter().any(|a| a.path().is_ident("subst_var")))
-                .or_else(|| {
+            let var_variant = is_self
+                .then(|| {
                     e.variants
                         .iter()
-                        .find(|v| v.ident == "V" || v.ident == "Var" || v.ident == "Variable")
+                        .find(|v| v.attrs.iter().any(|a| a.path().is_ident("subst_var")))
+                        .or_else(|| {
+                            e.variants.iter().find(|v| {
+                                v.ident == "V" || v.ident == "Var" || v.ident == "Variable"
+                            })
+                        })
                 })
+                .flatten()
                 .map(|v| &v.ident);
 
             let is_var = match var_variant {

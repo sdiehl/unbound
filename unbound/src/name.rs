@@ -7,10 +7,13 @@
 //!
 //! [`Bind`]: crate::Bind
 
+use std::any::TypeId;
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -44,6 +47,36 @@ impl<T> Name<T> {
             repr: Repr::Free {
                 string: s.into(),
                 index: next_index(),
+            },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// The one free name of this type with the given spelling.
+    ///
+    /// Every call with the same spelling returns the same name, which is what
+    /// a parser wants: build the term bottom-up with `Name::global` for every
+    /// occurrence, and each [`Bind::new`] captures exactly the occurrences
+    /// still free in its body. Shadowing then resolves lexically with no
+    /// separate renaming pass. Names from [`Name::new`] are always distinct
+    /// from global ones.
+    ///
+    /// [`Bind::new`]: crate::Bind::new
+    pub fn global(s: &str) -> Self
+    where
+        T: 'static, {
+        static GLOBALS: OnceLock<Mutex<HashMap<(TypeId, String), usize>>> = OnceLock::new();
+        let mut globals = GLOBALS
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let index = *globals
+            .entry((TypeId::of::<T>(), s.to_string()))
+            .or_insert_with(next_index);
+        Name {
+            repr: Repr::Free {
+                string: s.to_string(),
+                index,
             },
             _phantom: PhantomData,
         }
@@ -163,14 +196,19 @@ impl<T> Clone for Name<T> {
 
 impl<T> fmt::Debug for Name<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Name({})", self)
+        match &self.repr {
+            Repr::Free { string, index } => write!(f, "Name({}@{})", string, index),
+            Repr::Bound { level, position } => write!(f, "Name(#{}.{})", level, position),
+        }
     }
 }
 
+/// A free name displays as its spelling, which need not be unique; use
+/// [`NameScope`](crate::NameScope) to print terms unambiguously.
 impl<T> fmt::Display for Name<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.repr {
-            Repr::Free { string, index } => write!(f, "{}@{}", string, index),
+            Repr::Free { string, .. } => f.write_str(string),
             Repr::Bound { level, position } => write!(f, "#{}.{}", level, position),
         }
     }
@@ -196,6 +234,18 @@ impl<T> PartialEq for Name<T> {
 }
 
 impl<T> Eq for Name<T> {}
+
+impl<T> PartialEq<AnyName> for Name<T> {
+    fn eq(&self, other: &AnyName) -> bool {
+        self.index() == Some(other.index)
+    }
+}
+
+impl<T> PartialEq<Name<T>> for AnyName {
+    fn eq(&self, other: &Name<T>) -> bool {
+        other == self
+    }
+}
 
 impl<T> Hash for Name<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -231,7 +281,7 @@ impl AnyName {
 
 impl fmt::Display for AnyName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.string, self.index)
+        f.write_str(&self.string)
     }
 }
 

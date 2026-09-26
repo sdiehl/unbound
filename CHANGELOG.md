@@ -7,6 +7,23 @@
 - `Alpha` and `Subst` for `Rc<T>` and `Arc<T>`, so ASTs built on shared
   pointers can derive both traits. Closing and opening are copy on write via
   `make_mut`, and `aeq` short-circuits on pointer equality.
+- `Bind::instantiate` and `Bind::instantiate_all` substitute values for a
+  binder's names directly, for beta reduction and type instantiation.
+- `Name::global`, one name per spelling and type, so a parser that builds
+  terms bottom-up gets lexical scope with no renaming pass.
+- `NameScope`, for printing terms with the fewest renamings that avoid
+  capture.
+- `#[subst(...)]` on the `Subst` derive, choosing the substitution targets:
+  other types (`#[subst(Ty)]`), several at once (`#[subst(Self, Ty)]`), or
+  every type for variable-free types such as kinds (`#[subst(_)]`).
+- `Name<T>` and `AnyName` compare with each other directly.
+
+### Changed
+
+- `Display` for `Name` and `AnyName` prints just the spelling; `Debug` keeps
+  the index.
+- Loosened the `proc-macro2`, `quote` and `syn` requirements to their major
+  versions.
 
 ## [0.2.0] - 2026-09-21
 

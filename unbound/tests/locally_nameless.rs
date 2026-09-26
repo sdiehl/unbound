@@ -173,6 +173,133 @@ fn closing_and_opening_round_trip() {
 }
 
 /// The same calculus over shared pointers.
+#[test]
+fn instantiate_substitutes_for_the_binder() {
+    let (x, y, z): (Var, Var, Var) = (s2n("x"), s2n("y"), s2n("z"));
+    let Expr::Lam(b) = lam(x.clone(), app(Expr::V(x), Expr::V(y.clone()))) else {
+        unreachable!()
+    };
+    let out = b.instantiate(&Expr::V(z.clone()));
+    assert!(out.aeq(&Box::new(app(Expr::V(z), Expr::V(y)))));
+}
+
+#[test]
+fn instantiate_all_fills_binders_in_order() {
+    let (x, y): (Var, Var) = (s2n("x"), s2n("y"));
+    let (a, b): (Var, Var) = (s2n("a"), s2n("b"));
+    let many = bind(
+        vec![x.clone(), y.clone()],
+        Box::new(app(Expr::V(y), Expr::V(x))),
+    );
+    let out = many.instantiate_all(&[Expr::V(a.clone()), Expr::V(b.clone())]);
+    assert!(out.aeq(&Box::new(app(Expr::V(b), Expr::V(a)))));
+}
+
+#[test]
+fn global_names_scope_lexically() {
+    // \x. \y. (\x. x) x, built bottom-up as a parser would.
+    let x = || Name::<Expr>::global("x");
+    let y = Name::<Expr>::global("y");
+    let inner = lam(x(), Expr::V(x()));
+    let term = lam(x(), lam(y, app(inner, Expr::V(x()))));
+    assert_eq!(
+        coords(&term),
+        vec![Some((0, 0)), Some((1, 0))],
+        "each occurrence belongs to its nearest binder"
+    );
+    assert_ne!(x(), s2n::<Expr>("x"));
+}
+
+#[test]
+fn name_scope_renames_only_to_avoid_capture() {
+    fn show(e: &Expr, s: &mut NameScope) -> String {
+        match e {
+            Expr::V(v) => s.get(v).to_string(),
+            Expr::Lam(b) => {
+                let (x, body) = b.unbind_ref();
+                let d = s.bind(&x, &body.fv());
+                let out = format!("\\{d}. {}", show(&body, s));
+                s.pop();
+                out
+            }
+            Expr::App(f, a) => format!("({} {})", show(f, s), show(a, s)),
+            _ => unreachable!(),
+        }
+    }
+    let print = |e: &Expr| show(e, &mut NameScope::new(&e.fv()));
+    let (x, x2): (Var, Var) = (s2n("x"), s2n("x"));
+
+    // The inner x must not capture the outer one.
+    let k = lam(x.clone(), lam(x2.clone(), Expr::V(x.clone())));
+    assert_eq!(print(&k), "\\x. \\x1. x");
+
+    // Shadowing an unused outer x is fine.
+    let k2 = lam(x.clone(), lam(x2.clone(), Expr::V(x2.clone())));
+    assert_eq!(print(&k2), "\\x. \\x. x");
+
+    // Distinct free names that share a spelling are told apart.
+    assert_eq!(print(&app(Expr::V(x), Expr::V(x2))), "(x x1)");
+}
+
+mod typed {
+    use std::rc::Rc;
+
+    use unbound::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Alpha, Subst)]
+    #[subst(_)]
+    enum Kind {
+        Star,
+        Arr(Rc<Kind>, Rc<Kind>),
+    }
+
+    #[derive(Clone, Debug, Alpha, Subst)]
+    #[subst(Self, Tm)]
+    enum Ty {
+        Var(Name<Ty>),
+        Forall(Bind<(Name<Ty>, Kind), Rc<Ty>>),
+        Int,
+    }
+
+    #[derive(Clone, Debug, Alpha, Subst)]
+    #[subst(Self, Ty)]
+    enum Tm {
+        Var(Name<Tm>),
+        Lam(Bind<(Name<Tm>, Ty), Rc<Tm>>),
+        App(Rc<Tm>, Rc<Tm>),
+    }
+
+    #[test]
+    fn terms_take_type_substitutions() {
+        let a: Name<Ty> = s2n("a");
+        let x: Name<Tm> = s2n("x");
+        let id = Tm::Lam(bind((x.clone(), Ty::Var(a.clone())), Rc::new(Tm::Var(x))));
+        let Tm::Lam(b) = id.subst(&a, &Ty::Int) else {
+            unreachable!()
+        };
+        assert!(b.pattern().1.aeq(&Ty::Int));
+    }
+
+    #[test]
+    fn terms_substitute_into_themselves_past_annotations() {
+        let (x, y, z): (Name<Tm>, Name<Tm>, Name<Tm>) = (s2n("x"), s2n("y"), s2n("z"));
+        let k = Tm::Lam(bind((y.clone(), Ty::Int), Rc::new(Tm::Var(x.clone()))));
+        let Tm::Lam(b) = k.subst(&x, &Tm::Var(z.clone())) else {
+            unreachable!()
+        };
+        assert!(b.instantiate(&Tm::Var(y)).aeq(&Rc::new(Tm::Var(z))));
+    }
+
+    #[test]
+    fn types_without_variables_pass_through() {
+        let a: Name<Ty> = s2n("a");
+        let k = Kind::Arr(Rc::new(Kind::Star), Rc::new(Kind::Star));
+        assert_eq!(k.subst(&a, &Ty::Int), k);
+        let all = Ty::Forall(bind((a.clone(), k), Rc::new(Ty::Var(a))));
+        assert!(all.subst(&s2n("b"), &Ty::Int).aeq(&all));
+    }
+}
+
 mod shared {
     use std::rc::Rc;
 
@@ -213,7 +340,7 @@ mod shared {
             unreachable!()
         };
         let (x2, body) = b.unbind_ref();
-        assert!(body.fv().iter().any(|n| n.index() == x2.index().unwrap()));
+        assert!(body.fv().iter().any(|n| *n == x2));
         let Expr::Lam(b) = &*alias else {
             unreachable!()
         };

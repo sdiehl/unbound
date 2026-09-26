@@ -3,6 +3,8 @@
 use std::fmt;
 
 use crate::alpha::{Alpha, Pattern};
+use crate::subst::Subst;
+use crate::Name;
 
 /// A pattern binding its names in a body.
 ///
@@ -44,6 +46,39 @@ impl<P: Pattern, T: Alpha> Bind<P, T> {
         P: Clone,
         T: Clone, {
         self.clone().unbind()
+    }
+
+    /// The body with `value` in place of the pattern's single binder.
+    ///
+    /// # Panics
+    ///
+    /// If the pattern does not bind exactly one name.
+    pub fn instantiate<V>(&self, value: &V) -> T
+    where
+        P: Clone,
+        T: Clone + Subst<V>, {
+        self.instantiate_all(std::slice::from_ref(value))
+    }
+
+    /// The body with `values` in place of the pattern's binders, in binding
+    /// order.
+    ///
+    /// # Panics
+    ///
+    /// If the number of values differs from the number of binders.
+    pub fn instantiate_all<V>(&self, values: &[V]) -> T
+    where
+        P: Clone,
+        T: Clone + Subst<V>, {
+        let (pattern, body) = self.unbind_ref();
+        let names = pattern.binders();
+        assert_eq!(names.len(), values.len(), "instantiate: arity mismatch");
+        // The opened names are fresh, so no value can mention one and the
+        // substitutions cannot interfere.
+        names
+            .iter()
+            .zip(values)
+            .fold(body, |body, (n, v)| body.subst(&Name::from_any(n), v))
     }
 }
 
