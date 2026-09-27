@@ -45,6 +45,7 @@ mod fresh;
 mod helpers;
 mod name;
 mod scope;
+mod shared;
 mod subst;
 
 pub use alpha::{Alpha, Pattern};
@@ -53,7 +54,8 @@ pub use fresh::{run_fresh, Fresh, FreshM, FreshState};
 pub use helpers::{bind, s2n};
 pub use name::{AnyName, Name};
 pub use scope::NameScope;
-pub use subst::{Subst, SubstName};
+pub use shared::{AlphaCtx, Shared, Support};
+pub use subst::{InstantiateCtx, Subst, SubstCtx, SubstName};
 pub use unbound_derive::{Alpha, Subst};
 
 /// Commonly used items.
@@ -66,5 +68,6 @@ pub mod prelude {
     pub use crate::helpers::{bind, s2n};
     pub use crate::name::{AnyName, Name};
     pub use crate::scope::NameScope;
+    pub use crate::shared::{AlphaCtx, Shared, Support};
     pub use crate::subst::{Subst, SubstName};
 }

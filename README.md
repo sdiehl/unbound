@@ -49,7 +49,7 @@ A name is either **free**, carrying a globally unique index drawn from a process
 
 So `\x. \y. x y` is stored as `\. \. #1.0 #0.0`, and the binder's own name is inert decoration. Three properties fall out:
 
-- **Alpha equivalence is structural equality.** `aeq` walks both terms in lockstep with no renaming context and no allocation, since alpha-variants have identical de Bruijn bodies
+- **Alpha equivalence is structural equality.** `aeq` walks both terms in lockstep without renaming bound variables, since alpha-variants have identical de Bruijn bodies
 - **Substitution cannot capture.** A bound variable has no name for an incoming term to collide with, so `subst` needs neither freshening nor a shadowing check
 - **Free variables are exact.** `fv` collects only genuinely free names, compared by index, so two distinct variables that happen to share a spelling are never conflated
 
@@ -64,6 +64,48 @@ A parser can resolve scope with no separate pass. `Name::global("x")` returns th
 The `Pattern` trait says what a binder abstracts over. Implementations are provided for a single `Name<T>`, a `Vec<Name<T>>` bound simultaneously, and either of those paired with an annotation, as in `Bind<(Name<Tm>, Ty), Box<Tm>>`. An annotation sits *outside* the scope of the binder it decorates, so it is closed at the enclosing level and contributes to the free variables of the whole binding.
 
 Children may be held in a `Box`, `Rc` or `Arc`. Shared pointers are copy on write, so closing or opening a term never disturbs another owner of the same subtree.
+
+### Shared Expression Graphs
+
+Use `Shared<T>` for ASTs with repeated subexpressions:
+
+```rust
+use unbound::prelude::*;
+
+#[derive(Clone, Debug, Alpha, Subst)]
+enum Expr {
+    Var(Name<Expr>),
+    Lam(Bind<Name<Expr>, Shared<Expr>>),
+    App(Shared<Expr>, Shared<Expr>),
+}
+```
+
+`Shared::new` creates an immutable node; `clone` shares it and `ptr_eq` tests
+identity. Cached variable support skips unaffected subtrees. Derived opening,
+closing, substitution, and equality share operation-local memo tables, so an
+affected node reached more than once is transformed once per binding context.
+Instantiation replaces bound occurrences directly in one traversal, including
+simultaneous multi-variable binders. Inserted values must be locally closed,
+as with ordinary substitution.
+
+This is opt-in: ordinary `Rc`/`Arc` still use their existing copy-on-write
+traversals. `Shared` is single-threaded, and contained syntax must not mutate
+through interior mutability. Hand-written `Alpha` implementations default to
+unknown support; hand-written `Subst` implementations retain the compatible
+open-then-substitute instantiation fallback. To preserve sharing through custom
+traversals, forward the supplied contexts to children. If providing support
+metadata manually, never omit occurrences and account for binder depth.
+
+```sh
+cargo run -p unbound --release --example shared_dag
+cargo test --workspace
+```
+
+The benchmark constructs `t₀ = a; tₙ₊₁ = f tₙ tₙ` with shared children. At depth
+18, binding an unused variable retains all 38 original nodes; standard `Rc`
+traversal expands that same graph into 1,048,573 nodes. Regression tests also
+exercise affected shared graphs, different binder depths, annotations,
+substitution contexts, and independent alpha-equivalent graphs.
 
 ### Capture-Avoiding Substitution
 

@@ -18,22 +18,41 @@ pub fn derive_alpha(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     let aeq = aeq_body(&input.data);
-    let close = traversal_body(&input.data, &format_ident!("close"), quote!(level, names));
-    let open = traversal_body(&input.data, &format_ident!("open"), quote!(level, names));
+    let close = traversal_body(
+        &input.data,
+        &format_ident!("close_with"),
+        quote!(level, names, ctx),
+    );
+    let open = traversal_body(
+        &input.data,
+        &format_ident!("open_with"),
+        quote!(level, names, ctx),
+    );
+    let support = traversal_body(
+        &input.data,
+        &format_ident!("support_in"),
+        quote!(&mut support),
+    );
     let fv_in = traversal_body(&input.data, &format_ident!("fv_in"), quote!(acc));
 
     quote! {
         impl #impl_generics unbound::Alpha for #name #ty_generics #where_clause {
             fn aeq(&self, other: &Self) -> bool {
-                #aeq
+                self.aeq_with(other, &mut unbound::AlphaCtx::default())
             }
-
+            fn aeq_with(&self, other: &Self, ctx: &mut unbound::AlphaCtx) -> bool { #aeq }
             fn close(&mut self, level: usize, names: &[unbound::AnyName]) {
-                #close
+                self.close_with(level, names, &mut unbound::AlphaCtx::default());
             }
-
             fn open(&mut self, level: usize, names: &[unbound::AnyName]) {
-                #open
+                self.open_with(level, names, &mut unbound::AlphaCtx::default());
+            }
+            fn close_with(&mut self, level: usize, names: &[unbound::AnyName], ctx: &mut unbound::AlphaCtx) { #close }
+            fn open_with(&mut self, level: usize, names: &[unbound::AnyName], ctx: &mut unbound::AlphaCtx) { #open }
+            fn support(&self) -> unbound::Support {
+                let mut support = unbound::Support::default();
+                #support
+                support
             }
 
             fn fv_in(&self, acc: &mut Vec<unbound::AnyName>) {
@@ -109,7 +128,10 @@ fn aeq_body(data: &Data) -> TokenStream2 {
             if mine.is_empty() {
                 return quote!(true);
             }
-            let checks = mine.iter().zip(&theirs).map(|(a, b)| quote!(#a.aeq(&#b)));
+            let checks = mine
+                .iter()
+                .zip(&theirs)
+                .map(|(a, b)| quote!(#a.aeq_with(&#b, ctx)));
             quote!(#(#checks)&&*)
         }
         Data::Enum(e) => {
@@ -120,7 +142,10 @@ fn aeq_body(data: &Data) -> TokenStream2 {
                 if mine.is_empty() {
                     return quote!((Self::#variant #lhs, Self::#variant #rhs) => true);
                 }
-                let checks = mine.iter().zip(&theirs).map(|(a, b)| quote!(#a.aeq(#b)));
+                let checks = mine
+                    .iter()
+                    .zip(&theirs)
+                    .map(|(a, b)| quote!(#a.aeq_with(#b, ctx)));
                 quote! {
                     (Self::#variant #lhs, Self::#variant #rhs) => #(#checks)&&*
                 }
@@ -201,7 +226,8 @@ pub fn derive_subst(input: TokenStream) -> TokenStream {
 
     let impls = targets.into_iter().map(|target| {
         if let syn::Type::Infer(_) = target {
-            let (is_var, subst) = subst_bodies(&input.data, false);
+            let (is_var, subst) = subst_bodies(&input.data, false, false);
+            let (_, instantiate) = subst_bodies(&input.data, false, true);
             return quote! {
                 impl #any_impl_generics unbound::Subst<__V> for #name #ty_generics #where_clause {
                     fn is_var(&self) -> Option<unbound::SubstName<__V>> {
@@ -209,15 +235,18 @@ pub fn derive_subst(input: TokenStream) -> TokenStream {
                     }
 
                     fn subst(&self, var: &unbound::Name<__V>, value: &__V) -> Self {
-                        #subst
+                        self.subst_with(&mut unbound::SubstCtx::new(var, value))
                     }
+                    fn subst_with(&self, ctx: &mut unbound::SubstCtx<'_, __V>) -> Self { #subst }
+                    fn instantiate_with(&self, level: usize, ctx: &mut unbound::InstantiateCtx<'_, __V>) -> Option<Self> { #instantiate }
                 }
             };
         }
         let is_self = matches!(&target, syn::Type::Path(p)
             if p.qself.is_none() && (p.path.is_ident("Self") || p.path.is_ident(name)));
         let target = if is_self { self_ty.clone() } else { target };
-        let (is_var, subst) = subst_bodies(&input.data, is_self);
+        let (is_var, subst) = subst_bodies(&input.data, is_self, false);
+        let (_, instantiate) = subst_bodies(&input.data, is_self, true);
         quote! {
             impl #impl_generics unbound::Subst<#target> for #name #ty_generics #where_clause {
                 fn is_var(&self) -> Option<unbound::SubstName<#target>> {
@@ -225,8 +254,10 @@ pub fn derive_subst(input: TokenStream) -> TokenStream {
                 }
 
                 fn subst(&self, var: &unbound::Name<#target>, value: &#target) -> Self {
-                    #subst
+                    self.subst_with(&mut unbound::SubstCtx::new(var, value))
                 }
+                fn subst_with(&self, ctx: &mut unbound::SubstCtx<'_, #target>) -> Self { #subst }
+                fn instantiate_with(&self, level: usize, ctx: &mut unbound::InstantiateCtx<'_, #target>) -> Option<Self> { #instantiate }
             }
         }
     });
@@ -236,26 +267,40 @@ pub fn derive_subst(input: TokenStream) -> TokenStream {
 
 /// The `is_var` and `subst` bodies, recognising a variable case only when
 /// substituting into the type itself.
-fn subst_bodies(data: &Data, is_self: bool) -> (TokenStream2, TokenStream2) {
+fn subst_bodies(data: &Data, is_self: bool, instantiate: bool) -> (TokenStream2, TokenStream2) {
+    let field = |f: TokenStream2| {
+        if instantiate {
+            quote!(#f.instantiate_with(level, ctx)?)
+        } else {
+            quote!(#f.subst_with(ctx))
+        }
+    };
+    let result = |body: TokenStream2| {
+        if instantiate {
+            quote!(Some(#body))
+        } else {
+            body
+        }
+    };
     match data {
         Data::Struct(s) => {
             let fields = struct_fields(&s.fields, quote!(self));
             let build = match &s.fields {
                 Fields::Named(f) => {
                     let names: Vec<_> = f.named.iter().filter_map(|f| f.ident.as_ref()).collect();
-                    let inits = names
-                        .iter()
-                        .zip(&fields)
-                        .map(|(n, f)| quote!(#n: #f.subst(var, value)));
+                    let inits = names.iter().zip(&fields).map(|(n, f)| {
+                        let value = field(quote!(#f));
+                        quote!(#n: #value)
+                    });
                     quote!(Self { #(#inits),* })
                 }
                 Fields::Unnamed(_) => {
-                    let inits = fields.iter().map(|f| quote!(#f.subst(var, value)));
+                    let inits = fields.iter().map(|f| field(quote!(#f)));
                     quote!(Self( #(#inits),* ))
                 }
                 Fields::Unit => quote!(Self),
             };
-            (quote!(None), build)
+            (quote!(None), result(build))
         }
         Data::Enum(e) => {
             let var_variant = is_self
@@ -285,11 +330,14 @@ fn subst_bodies(data: &Data, is_self: bool) -> (TokenStream2, TokenStream2) {
             let arms = e.variants.iter().map(|v| {
                 let variant = &v.ident;
                 if Some(variant) == var_variant {
-                    return quote! {
-                        Self::#variant(x) => {
-                            if x == var { value.clone() } else { self.clone() }
+                    let replacement = if instantiate {
+                        quote! {
+                            if let Some((depth, position)) = x.coordinates() {
+                                if depth == level { ctx.values().get(position)?.clone() } else { self.clone() }
+                            } else { self.clone() }
                         }
-                    };
+                    } else { quote! { if x == ctx.var() { ctx.value().clone() } else { self.clone() } } };
+                    return quote! { Self::#variant(x) => { #replacement } };
                 }
                 let (locals, pat) = destructure(&v.fields, "f");
                 let build = match &v.fields {
@@ -299,11 +347,11 @@ fn subst_bodies(data: &Data, is_self: bool) -> (TokenStream2, TokenStream2) {
                         let inits = names
                             .iter()
                             .zip(&locals)
-                            .map(|(n, l)| quote!(#n: #l.subst(var, value)));
+                            .map(|(n, l)| { let value = field(quote!(#l)); quote!(#n: #value) });
                         quote!(Self::#variant { #(#inits),* })
                     }
                     Fields::Unnamed(_) => {
-                        let inits = locals.iter().map(|l| quote!(#l.subst(var, value)));
+                        let inits = locals.iter().map(|l| field(quote!(#l)));
                         quote!(Self::#variant( #(#inits),* ))
                     }
                     Fields::Unit => quote!(Self::#variant),
@@ -311,7 +359,7 @@ fn subst_bodies(data: &Data, is_self: bool) -> (TokenStream2, TokenStream2) {
                 quote!(Self::#variant #pat => #build)
             });
 
-            (is_var, quote!(match self { #(#arms),* }))
+            (is_var, result(quote!(match self { #(#arms),* })))
         }
         Data::Union(_) => panic!("Subst cannot be derived for unions"),
     }

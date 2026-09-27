@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::name::AnyName;
-use crate::{Bind, Name};
+use crate::{AlphaCtx, Bind, Name, Support};
 
 /// Terms that contain names and can be compared up to alpha equivalence.
 ///
@@ -19,6 +19,25 @@ use crate::{Bind, Name};
 pub trait Alpha {
     /// Whether two terms are alpha-equivalent.
     fn aeq(&self, other: &Self) -> bool;
+
+    fn aeq_with(&self, other: &Self, _ctx: &mut AlphaCtx) -> bool {
+        self.aeq(other)
+    }
+
+    fn support(&self) -> Support {
+        Support::unknown()
+    }
+    fn support_in(&self, acc: &mut Support) {
+        acc.merge(self.support());
+    }
+
+    fn close_with(&mut self, level: usize, names: &[AnyName], _ctx: &mut AlphaCtx) {
+        self.close(level, names);
+    }
+
+    fn open_with(&mut self, level: usize, names: &[AnyName], _ctx: &mut AlphaCtx) {
+        self.open(level, names);
+    }
 
     /// Abstract `names` into bound variables at de Bruijn `level`.
     ///
@@ -69,6 +88,19 @@ pub trait Pattern: Sized {
 
     /// Open the pattern's annotations, leaving its binders alone.
     fn pattern_open(&mut self, level: usize, names: &[AnyName]);
+
+    fn pattern_support(&self) -> Support {
+        Support::unknown()
+    }
+    fn pattern_close_with(&mut self, level: usize, names: &[AnyName], _ctx: &mut AlphaCtx) {
+        self.pattern_close(level, names);
+    }
+    fn pattern_open_with(&mut self, level: usize, names: &[AnyName], _ctx: &mut AlphaCtx) {
+        self.pattern_open(level, names);
+    }
+    fn pattern_aeq_with(&self, other: &Self, _ctx: &mut AlphaCtx) -> bool {
+        self.pattern_aeq(other)
+    }
 }
 
 /// Push `name` onto `acc` unless an equal name is already there.
@@ -79,6 +111,9 @@ fn push_unique(acc: &mut Vec<AnyName>, name: AnyName) {
 }
 
 impl<T> Alpha for Name<T> {
+    fn support(&self) -> Support {
+        Support::name(self)
+    }
     fn aeq(&self, other: &Self) -> bool {
         self == other
     }
@@ -102,6 +137,7 @@ macro_rules! alpha_atom {
     ($($ty:ty),* $(,)?) => {$(
         impl Alpha for $ty {
             fn aeq(&self, other: &Self) -> bool { self == other }
+            fn support(&self) -> Support { Support::default() }
             fn close(&mut self, _level: usize, _names: &[AnyName]) {}
             fn open(&mut self, _level: usize, _names: &[AnyName]) {}
             fn fv_in(&self, _acc: &mut Vec<AnyName>) {}
@@ -113,25 +149,34 @@ alpha_atom!(bool, char, String, u8, u16, u32, u64, usize, i8, i16, i32, i64, isi
 
 impl<T: Alpha> Alpha for Option<T> {
     fn aeq(&self, other: &Self) -> bool {
+        self.aeq_with(other, &mut AlphaCtx::default())
+    }
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
         match (self, other) {
             (None, None) => true,
-            (Some(a), Some(b)) => a.aeq(b),
+            (Some(a), Some(b)) => a.aeq_with(b, ctx),
             _ => false,
         }
     }
-
     fn close(&mut self, level: usize, names: &[AnyName]) {
-        if let Some(x) = self {
-            x.close(level, names);
-        }
+        self.close_with(level, names, &mut AlphaCtx::default());
     }
-
     fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.open_with(level, names, &mut AlphaCtx::default());
+    }
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
         if let Some(x) = self {
-            x.open(level, names);
+            x.close_with(level, names, ctx);
         }
     }
-
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        if let Some(x) = self {
+            x.open_with(level, names, ctx);
+        }
+    }
+    fn support(&self) -> Support {
+        self.as_ref().map_or_else(Support::default, Alpha::support)
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         if let Some(x) = self {
             x.fv_in(acc);
@@ -141,21 +186,36 @@ impl<T: Alpha> Alpha for Option<T> {
 
 impl<T: Alpha> Alpha for Vec<T> {
     fn aeq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a.aeq(b))
+        self.aeq_with(other, &mut AlphaCtx::default())
     }
-
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a.aeq_with(b, ctx))
+    }
     fn close(&mut self, level: usize, names: &[AnyName]) {
-        for x in self {
-            x.close(level, names);
-        }
+        self.close_with(level, names, &mut AlphaCtx::default());
     }
-
     fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.open_with(level, names, &mut AlphaCtx::default());
+    }
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
         for x in self {
-            x.open(level, names);
+            x.close_with(level, names, ctx);
         }
     }
-
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        for x in self {
+            x.open_with(level, names, ctx);
+        }
+    }
+    fn support(&self) -> Support {
+        {
+            let mut out = Support::default();
+            for x in self {
+                out.merge(x.support());
+            }
+            out
+        }
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         for x in self {
             x.fv_in(acc);
@@ -165,86 +225,148 @@ impl<T: Alpha> Alpha for Vec<T> {
 
 impl<T: Alpha> Alpha for Box<T> {
     fn aeq(&self, other: &Self) -> bool {
-        (**self).aeq(other)
+        self.aeq_with(other, &mut AlphaCtx::default())
     }
-
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        (**self).aeq_with(other, ctx)
+    }
     fn close(&mut self, level: usize, names: &[AnyName]) {
-        (**self).close(level, names);
+        self.close_with(level, names, &mut AlphaCtx::default());
     }
-
     fn open(&mut self, level: usize, names: &[AnyName]) {
-        (**self).open(level, names);
+        self.open_with(level, names, &mut AlphaCtx::default());
     }
-
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        (**self).close_with(level, names, ctx);
+    }
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        (**self).open_with(level, names, ctx);
+    }
+    fn support(&self) -> Support {
+        (**self).support()
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         (**self).fv_in(acc);
     }
 }
 
-/// Shared pointers are copy on write: closing or opening a node that is
-/// shared clones it first, so other owners never observe the change.
-macro_rules! alpha_shared {
-    ($($ptr:ident),* $(,)?) => {$(
-        impl<T: Alpha + Clone> Alpha for $ptr<T> {
-            fn aeq(&self, other: &Self) -> bool {
-                $ptr::ptr_eq(self, other) || (**self).aeq(other)
-            }
-
-            fn close(&mut self, level: usize, names: &[AnyName]) {
-                $ptr::make_mut(self).close(level, names);
-            }
-
-            fn open(&mut self, level: usize, names: &[AnyName]) {
-                $ptr::make_mut(self).open(level, names);
-            }
-
-            fn fv_in(&self, acc: &mut Vec<AnyName>) {
-                (**self).fv_in(acc);
-            }
-        }
-    )*};
+impl<T: Alpha + Clone> Alpha for Rc<T> {
+    fn aeq(&self, other: &Self) -> bool {
+        self.aeq_with(other, &mut AlphaCtx::default())
+    }
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        Rc::ptr_eq(self, other) || (**self).aeq_with(other, ctx)
+    }
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        self.close_with(level, names, &mut AlphaCtx::default());
+    }
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.open_with(level, names, &mut AlphaCtx::default());
+    }
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        Rc::make_mut(self).close_with(level, names, ctx);
+    }
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        Rc::make_mut(self).open_with(level, names, ctx);
+    }
+    fn support(&self) -> Support {
+        (**self).support()
+    }
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        (**self).fv_in(acc);
+    }
 }
 
-alpha_shared!(Rc, Arc);
+impl<T: Alpha + Clone> Alpha for Arc<T> {
+    fn aeq(&self, other: &Self) -> bool {
+        self.aeq_with(other, &mut AlphaCtx::default())
+    }
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        Arc::ptr_eq(self, other) || (**self).aeq_with(other, ctx)
+    }
+    fn close(&mut self, level: usize, names: &[AnyName]) {
+        self.close_with(level, names, &mut AlphaCtx::default());
+    }
+    fn open(&mut self, level: usize, names: &[AnyName]) {
+        self.open_with(level, names, &mut AlphaCtx::default());
+    }
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        Arc::make_mut(self).close_with(level, names, ctx);
+    }
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        Arc::make_mut(self).open_with(level, names, ctx);
+    }
+    fn support(&self) -> Support {
+        (**self).support()
+    }
+    fn fv_in(&self, acc: &mut Vec<AnyName>) {
+        (**self).fv_in(acc);
+    }
+}
 
 impl<A: Alpha, B: Alpha> Alpha for (A, B) {
     fn aeq(&self, other: &Self) -> bool {
-        self.0.aeq(&other.0) && self.1.aeq(&other.1)
+        self.aeq_with(other, &mut AlphaCtx::default())
     }
-
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        self.0.aeq_with(&other.0, ctx) && self.1.aeq_with(&other.1, ctx)
+    }
     fn close(&mut self, level: usize, names: &[AnyName]) {
-        self.0.close(level, names);
-        self.1.close(level, names);
+        self.close_with(level, names, &mut AlphaCtx::default());
     }
-
     fn open(&mut self, level: usize, names: &[AnyName]) {
-        self.0.open(level, names);
-        self.1.open(level, names);
+        self.open_with(level, names, &mut AlphaCtx::default());
     }
-
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.0.close_with(level, names, ctx);
+        self.1.close_with(level, names, ctx);
+    }
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.0.open_with(level, names, ctx);
+        self.1.open_with(level, names, ctx);
+    }
+    fn support(&self) -> Support {
+        {
+            let mut out = self.0.support();
+            out.merge(self.1.support());
+            out
+        }
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         self.0.fv_in(acc);
         self.1.fv_in(acc);
     }
 }
 
-/// A binding is alpha-equivalent to another when their annotations match and
-/// their closed bodies are structurally equal. Binder names play no part.
 impl<P: Pattern, T: Alpha> Alpha for Bind<P, T> {
     fn aeq(&self, other: &Self) -> bool {
-        self.pattern().pattern_aeq(other.pattern()) && self.body().aeq(other.body())
+        self.aeq_with(other, &mut AlphaCtx::default())
     }
-
+    fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        self.pattern().pattern_aeq_with(other.pattern(), ctx)
+            && self.body().aeq_with(other.body(), ctx)
+    }
     fn close(&mut self, level: usize, names: &[AnyName]) {
-        self.pattern_mut().pattern_close(level, names);
-        self.body_mut().close(level + 1, names);
+        self.close_with(level, names, &mut AlphaCtx::default());
     }
-
     fn open(&mut self, level: usize, names: &[AnyName]) {
-        self.pattern_mut().pattern_open(level, names);
-        self.body_mut().open(level + 1, names);
+        self.open_with(level, names, &mut AlphaCtx::default());
     }
-
+    fn close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.pattern_mut().pattern_close_with(level, names, ctx);
+        self.body_mut().close_with(level + 1, names, ctx);
+    }
+    fn open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.pattern_mut().pattern_open_with(level, names, ctx);
+        self.body_mut().open_with(level + 1, names, ctx);
+    }
+    fn support(&self) -> Support {
+        {
+            let mut out = self.pattern().pattern_support();
+            out.merge(self.body().support().under_binder());
+            out
+        }
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         self.pattern().pattern_fv(acc);
         self.body().fv_in(acc);
@@ -253,6 +375,9 @@ impl<P: Pattern, T: Alpha> Alpha for Bind<P, T> {
 
 /// A single binder.
 impl<T> Pattern for Name<T> {
+    fn pattern_support(&self) -> Support {
+        Support::default()
+    }
     fn binders(&self) -> Vec<AnyName> {
         self.to_any().into_iter().collect()
     }
@@ -276,6 +401,9 @@ impl<T> Pattern for Name<T> {
 
 /// A telescope of binders, bound simultaneously.
 impl<T> Pattern for Vec<Name<T>> {
+    fn pattern_support(&self) -> Support {
+        Support::default()
+    }
     fn binders(&self) -> Vec<AnyName> {
         self.iter().filter_map(|n| n.to_any()).collect()
     }
@@ -300,6 +428,19 @@ impl<T> Pattern for Vec<Name<T>> {
 /// A binder carrying an annotation, such as a type ascription. The
 /// annotation is outside the binder's own scope.
 impl<T, U: Alpha + Clone> Pattern for (Name<T>, U) {
+    fn pattern_support(&self) -> Support {
+        self.1.support()
+    }
+    fn pattern_close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.1.close_with(level, names, ctx);
+    }
+    fn pattern_open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.1.open_with(level, names, ctx);
+    }
+    fn pattern_aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        self.0.pattern_aeq(&other.0) && self.1.aeq_with(&other.1, ctx)
+    }
+
     fn binders(&self) -> Vec<AnyName> {
         self.0.to_any().into_iter().collect()
     }
@@ -329,6 +470,19 @@ impl<T, U: Alpha + Clone> Pattern for (Name<T>, U) {
 
 /// A telescope of binders carrying an annotation.
 impl<T, U: Alpha + Clone> Pattern for (Vec<Name<T>>, U) {
+    fn pattern_support(&self) -> Support {
+        self.1.support()
+    }
+    fn pattern_close_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.1.close_with(level, names, ctx);
+    }
+    fn pattern_open_with(&mut self, level: usize, names: &[AnyName], ctx: &mut AlphaCtx) {
+        self.1.open_with(level, names, ctx);
+    }
+    fn pattern_aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
+        self.0.pattern_aeq(&other.0) && self.1.aeq_with(&other.1, ctx)
+    }
+
     fn binders(&self) -> Vec<AnyName> {
         self.0.iter().filter_map(|n| n.to_any()).collect()
     }

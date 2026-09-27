@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::alpha::{Alpha, Pattern};
-use crate::subst::Subst;
+use crate::subst::{InstantiateCtx, Subst};
 use crate::Name;
 
 /// A pattern binding its names in a body.
@@ -44,7 +44,8 @@ impl<P: Pattern, T: Alpha> Bind<P, T> {
     pub fn unbind_ref(&self) -> (P, T)
     where
         P: Clone,
-        T: Clone, {
+        T: Clone,
+    {
         self.clone().unbind()
     }
 
@@ -56,7 +57,8 @@ impl<P: Pattern, T: Alpha> Bind<P, T> {
     pub fn instantiate<V>(&self, value: &V) -> T
     where
         P: Clone,
-        T: Clone + Subst<V>, {
+        T: Clone + Subst<V>,
+    {
         self.instantiate_all(std::slice::from_ref(value))
     }
 
@@ -69,7 +71,19 @@ impl<P: Pattern, T: Alpha> Bind<P, T> {
     pub fn instantiate_all<V>(&self, values: &[V]) -> T
     where
         P: Clone,
-        T: Clone + Subst<V>, {
+        T: Clone + Subst<V>,
+    {
+        assert_eq!(
+            self.pattern.binders().len(),
+            values.len(),
+            "instantiate: arity mismatch"
+        );
+        if let Some(body) = self
+            .body
+            .instantiate_with(0, &mut InstantiateCtx::new(values))
+        {
+            return body;
+        }
         let (pattern, body) = self.unbind_ref();
         let names = pattern.binders();
         assert_eq!(names.len(), values.len(), "instantiate: arity mismatch");
