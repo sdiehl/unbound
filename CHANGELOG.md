@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.0] - 2026-09-27
+
+### Added
+
+- `Shared<T>`, an immutable shared node for ASTs with repeated
+  subexpressions. Derived opening, closing, substitution, instantiation and
+  alpha equivalence preserve the DAG: each node caches its variable support so
+  unaffected subtrees are skipped, and an affected node reached more than once
+  is transformed once per binding context.
+- `Support`, the free names and loose bound coordinates of a subtree, with a
+  new `Alpha::support` method. Hand-written implementations default to
+  unknown support and keep the conservative traversal.
+- Context-passing traversals `Alpha::aeq_with`, `close_with` and `open_with`
+  (threading an `AlphaCtx`), and `Subst::subst_with` and `instantiate_with`
+  (threading a `SubstCtx` or `InstantiateCtx`). The derives forward these
+  contexts to children, and custom traversals should do the same to preserve
+  sharing.
+- The `shared_dag` example, which binds an unused variable over a depth 18
+  shared graph and retains all 38 original nodes where `Rc` expands it to over
+  a million.
+
+### Changed
+
+- `Bind::instantiate` and `Bind::instantiate_all` replace bound occurrences
+  directly in a single traversal when the body supports it, falling back to
+  open then substitute otherwise.
+
 ## [0.3.0] - 2026-09-27
 
 ### Added
