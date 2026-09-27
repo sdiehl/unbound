@@ -138,4 +138,4 @@ pub struct FreshM<T> {
 
 ## License
 
-MIT Licensed. Copyright 2025 Stephen Diehl.
+MIT Licensed. Copyright 2025-2026 Stephen Diehl.
