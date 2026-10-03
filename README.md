@@ -147,3 +147,17 @@ pub struct FreshM<T> {
 ## License
 
 MIT Licensed. Copyright 2025-2026 Stephen Diehl.
+
+### Interner memory
+
+`Shared::intern` looks up a value before allocating a node. The per-thread,
+per-type weak table periodically removes dead entries; `Shared::<T>::collect_dead()`
+also removes dead entries and shrinks excess capacity at a coarse phase boundary.
+It preserves all live canonical nodes and returns the number of removed entries.
+Do not clear live entries: pointer identity is part of interned alpha equivalence.
+
+Support metadata uses no heap allocation for empty/unknown support, compact sorted
+bound-coordinate vectors, and a free-name hash index only above eight names.
+`support_ref()` borrows cached metadata; `is_known()`, `has_loose_bound_vars()`,
+`max_loose_level()`, and `bound_coordinates()` expose conservative traversal hints.
+Unknown support must not be treated as a complete bound-variable set.

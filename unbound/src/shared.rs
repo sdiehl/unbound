@@ -35,8 +35,12 @@ impl SupportData {
         )
     }
     fn insert_free(&mut self, name: AnyName) {
-        if self.contains(name.index()) { return; }
-        if let Some(indices) = &mut self.indices { indices.insert(name.index()); }
+        if self.contains(name.index()) {
+            return;
+        }
+        if let Some(indices) = &mut self.indices {
+            indices.insert(name.index());
+        }
         self.free.push(name);
         if self.indices.is_none() && self.free.len() > 8 {
             self.indices = Some(self.free.iter().map(AnyName::index).collect());
@@ -50,7 +54,9 @@ impl SupportData {
 }
 impl Support {
     /// Whether the recorded support is complete.
-    pub fn is_known(&self) -> bool { !self.unknown }
+    pub fn is_known(&self) -> bool {
+        !self.unknown
+    }
     /// Whether loose bound coordinates may occur. Unknown support is conservative.
     pub fn has_loose_bound_vars(&self) -> bool {
         self.unknown || !self.bounds().is_empty()
@@ -72,41 +78,65 @@ impl Support {
     fn contains(&self, index: usize) -> bool {
         self.data.as_ref().is_some_and(|data| data.contains(index))
     }
-    pub fn unknown() -> Self { Self { unknown: true, data: None } }
+    pub fn unknown() -> Self {
+        Self {
+            unknown: true,
+            data: None,
+        }
+    }
     pub fn name<T>(name: &Name<T>) -> Self {
         let mut out = Self::default();
         if let Some(n) = name.to_any() {
             out.data.get_or_insert_with(Default::default).insert_free(n);
         }
         if let Some(p) = name.coordinates() {
-            out.data.get_or_insert_with(Default::default).insert_bound(p);
+            out.data
+                .get_or_insert_with(Default::default)
+                .insert_bound(p);
         }
         out
     }
     pub fn merge(&mut self, other: Self) {
         self.unknown |= other.unknown;
-        if self.data.is_none() {
+        if let Some(data) = &mut self.data {
+            if let Some(other) = other.data {
+                for n in other.free {
+                    data.insert_free(n);
+                }
+                for p in other.bound {
+                    data.insert_bound(p);
+                }
+            }
+        } else {
             self.data = other.data;
-        } else if let Some(other) = other.data {
-            let data = self.data.as_mut().unwrap();
-            for n in other.free { data.insert_free(n); }
-            for p in other.bound { data.insert_bound(p); }
         }
     }
+
     fn merge_ref(&mut self, other: &Self) {
         self.unknown |= other.unknown;
         if let Some(other) = &other.data {
             let data = self.data.get_or_insert_with(Default::default);
-            for n in &other.free { data.insert_free(n.clone()); }
-            for &p in &other.bound { data.insert_bound(p); }
+            for n in &other.free {
+                data.insert_free(n.clone());
+            }
+            for &p in &other.bound {
+                data.insert_bound(p);
+            }
         }
     }
     pub fn under_binder(mut self) -> Self {
         if let Some(data) = &mut self.data {
             data.bound.retain_mut(|(d, _)| {
-                if let Some(lower) = d.checked_sub(1) { *d = lower; true } else { false }
+                if let Some(lower) = d.checked_sub(1) {
+                    *d = lower;
+                    true
+                } else {
+                    false
+                }
             });
-            if data.free.is_empty() && data.bound.is_empty() { self.data = None; }
+            if data.free.is_empty() && data.bound.is_empty() {
+                self.data = None;
+            }
         }
         self
     }
@@ -152,7 +182,12 @@ struct Table<T> {
     misses: usize,
 }
 impl<T> Table<T> {
-    fn new() -> Self { Self { entries: HashTable::new(), misses: 0 } }
+    fn new() -> Self {
+        Self {
+            entries: HashTable::new(),
+            misses: 0,
+        }
+    }
     fn collect(&mut self, shrink: bool) -> usize {
         let before = self.entries.len();
         self.entries.retain(|(_, weak)| weak.strong_count() > 0);
@@ -165,6 +200,8 @@ impl<T> Table<T> {
 }
 
 thread_local! {
+    #[cfg(test)]
+    static ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TABLES: RefCell<HashMap<TypeId, Box<dyn Any>, FixedState>> = RefCell::default();
 }
 
@@ -187,6 +224,8 @@ impl<T> Shared<T> {
         Self::alloc(value, false)
     }
     fn alloc(value: T, interned: bool) -> Self {
+        #[cfg(test)]
+        ALLOCATIONS.with(|n| n.set(n.get() + 1));
         Self(Rc::new(Node {
             value,
             support: OnceCell::new(),
@@ -269,34 +308,51 @@ impl<T: Alpha + 'static> Shared<T> {
                 .or_insert_with(|| Box::new(Table::<T>::new()))
                 .downcast_mut::<Table<T>>()
                 .expect("matching table type");
-            if let Some(node) = table.entries
-                .find(hash, |(h, weak)| *h == hash && weak.upgrade().is_some_and(|n| n.value.aeq(&value)))
+            if let Some(node) = table
+                .entries
+                .find(hash, |(h, weak)| {
+                    *h == hash && weak.upgrade().is_some_and(|n| n.value.aeq(&value))
+                })
                 .and_then(|(_, weak)| weak.upgrade())
-            { return Some(node); }
+            {
+                return Some(node);
+            }
             None
         });
-        if let Some(node) = found { return Self(node); }
+        if let Some(node) = found {
+            return Self(node);
+        }
         // Allocate/drop user values outside the TABLES borrow: destructors may intern.
         let node = Self::alloc(value, true);
         node.0.hash.set(hash).expect("new node hash");
         TABLES.with(|tables| {
             let mut tables = tables.borrow_mut();
-            let table = tables.get_mut(&TypeId::of::<T>()).unwrap()
-                .downcast_mut::<Table<T>>().expect("matching table type");
+            let table = tables
+                .get_mut(&TypeId::of::<T>())
+                .unwrap()
+                .downcast_mut::<Table<T>>()
+                .expect("matching table type");
             table.misses += 1;
             // Amortize a full sweep over a proportional number of misses,
             // including workloads that stop growing before capacity is exhausted.
             if table.misses >= table.entries.len().max(1024) {
                 table.collect(false);
             }
-            if let Some((_, weak)) = table.entries.find_mut(hash, |(h, weak)| *h == hash && weak.strong_count() == 0) {
+            if let Some((_, weak)) = table
+                .entries
+                .find_mut(hash, |(h, weak)| *h == hash && weak.strong_count() == 0)
+            {
                 *weak = Rc::downgrade(&node.0);
             } else {
                 if table.entries.len() == table.entries.capacity() {
                     table.collect(false);
-                    table.entries.reserve(table.entries.len().max(1), |(h, _)| *h);
+                    table
+                        .entries
+                        .reserve(table.entries.len().max(1), |(h, _)| *h);
                 }
-                table.entries.insert_unique(hash, (hash, Rc::downgrade(&node.0)), |(h, _)| *h);
+                table
+                    .entries
+                    .insert_unique(hash, (hash, Rc::downgrade(&node.0)), |(h, _)| *h);
             }
         });
         node
@@ -307,8 +363,15 @@ impl<T: Alpha + 'static> Shared<T> {
     /// not after each allocation: collection scans the table.
     pub fn collect_dead() -> usize {
         TABLES.with(|tables| {
-            tables.borrow_mut().get_mut(&TypeId::of::<T>())
-                .map_or(0, |table| table.downcast_mut::<Table<T>>().expect("matching table type").collect(true))
+            tables
+                .borrow_mut()
+                .get_mut(&TypeId::of::<T>())
+                .map_or(0, |table| {
+                    table
+                        .downcast_mut::<Table<T>>()
+                        .expect("matching table type")
+                        .collect(true)
+                })
         })
     }
     /// A node holding `value`, interned when `self` is.
@@ -475,6 +538,84 @@ impl<T: Alpha + Subst<V> + 'static, V> Subst<V> for Shared<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intern_hits_do_not_allocate_candidate_nodes() {
+        let live = Shared::intern(42u64);
+        let before = ALLOCATIONS.with(|n| n.get());
+        for _ in 0..1000 {
+            assert!(Shared::intern(42u64).ptr_eq(&live));
+        }
+        assert_eq!(ALLOCATIONS.with(|n| n.get()), before);
+    }
+
+    #[test]
+    fn compact_support_preserves_order_and_bound_coordinates() {
+        assert!(std::mem::size_of::<Support>() <= 2 * std::mem::size_of::<usize>());
+        let mut support = Support::default();
+        let names: Vec<Name<u64>> = (0..20).map(|_| crate::s2n("x")).collect();
+        for name in names.iter().chain(names.iter().rev()) {
+            support.merge(Support::name(name));
+        }
+        assert_eq!(
+            support
+                .free()
+                .iter()
+                .map(AnyName::index)
+                .collect::<Vec<_>>(),
+            names.iter().map(|n| n.index().unwrap()).collect::<Vec<_>>()
+        );
+        for p in [(2, 1), (0, 0), (1, 2), (2, 1)] {
+            support.merge(Support::name(&Name::<u64>::bound(p.0, p.1)));
+        }
+        let lowered = support.under_binder();
+        assert_eq!(
+            lowered.bound_coordinates().collect::<Vec<_>>(),
+            vec![(0, 2), (1, 1)]
+        );
+        assert!(lowered.closes(&[names[19].to_any().unwrap()]));
+        assert!(Support::name(&Name::<u64>::bound(0, 0))
+            .under_binder()
+            .data
+            .is_none());
+    }
+
+    #[test]
+    fn collection_releases_allocations_and_preserves_live_identity() {
+        let live = Shared::intern(999_999u64);
+        let nodes: Vec<_> = (0..4096u64).map(Shared::intern).collect();
+        let weak = Rc::downgrade(&nodes[0].0);
+        drop(nodes);
+        assert_eq!(weak.strong_count(), 0);
+        assert!(Shared::<u64>::collect_dead() >= 4096);
+        assert!(Shared::intern(999_999u64).ptr_eq(&live));
+        TABLES.with(|tables| {
+            let tables = tables.borrow();
+            let table = tables[&TypeId::of::<u64>()]
+                .downcast_ref::<Table<u64>>()
+                .unwrap();
+            assert_eq!(table.entries.len(), 1);
+            assert!(table.entries.capacity() <= 64);
+        });
+        // A caller's weak handle alone cannot resurrect a collected node.
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn churn_is_collected_without_reaching_table_capacity() {
+        let nodes: Vec<_> = (0..4096u64).map(Shared::intern).collect();
+        drop(nodes);
+        for i in 0..20_000 {
+            drop(Shared::intern(100_000u64 + i));
+        }
+        TABLES.with(|tables| {
+            let tables = tables.borrow();
+            let table = tables[&TypeId::of::<u64>()]
+                .downcast_ref::<Table<u64>>()
+                .unwrap();
+            assert!(table.entries.len() <= 1024);
+        });
+    }
 
     #[test]
     fn repeated_dead_terms_reuse_their_intern_slots() {
