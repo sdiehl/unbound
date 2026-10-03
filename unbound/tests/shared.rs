@@ -314,3 +314,99 @@ fn direct_instantiation_matches_open_then_substitute() {
         assert!(direct.aeq(&old));
     }
 }
+
+fn cons(e: Expr) -> Shared<Expr> {
+    Shared::intern(e)
+}
+fn cons_dag(depth: usize, leaf: Shared<Expr>) -> Shared<Expr> {
+    (0..depth).fold(leaf, |e, _| cons(Expr::App(e.clone(), e)))
+}
+fn ident(x: &str) -> Shared<Expr> {
+    let x = Name::new(x);
+    cons(Expr::Lam(bind(x.clone(), cons(Expr::Var(x)))))
+}
+
+#[test]
+fn interned_alpha_variants_are_one_node() {
+    assert!(ident("x").ptr_eq(&ident("y")));
+    assert!(cons_dag(60, cons(Expr::Atom(0))).ptr_eq(&cons_dag(60, cons(Expr::Atom(0)))));
+    let x = Name::new("x");
+    let konst = cons(Expr::Lam(bind(Name::new("y"), cons(Expr::Var(x)))));
+    assert!(!konst.ptr_eq(&ident("y")));
+    assert!(!konst.aeq(&ident("y")));
+}
+
+#[test]
+fn operations_on_interned_nodes_stay_interned() {
+    let x = Name::new("x");
+    let input = cons_dag(40, cons(Expr::Var(x.clone())));
+    let target = cons_dag(40, cons(Expr::Atom(9)));
+    let replaced = input.subst(&x, &Expr::Atom(9));
+    assert!(replaced.is_interned());
+    assert!(replaced.ptr_eq(&target));
+    let b = bind(x, input.clone());
+    assert!(b.body().is_interned());
+    assert!(b.instantiate(&Expr::Atom(9)).ptr_eq(&target));
+    let (_, opened) = b.unbind_ref();
+    assert!(opened.is_interned());
+    assert_eq!(count(&opened), 41);
+}
+
+#[test]
+fn mixed_interned_and_plain_nodes_compare_structurally() {
+    let plain = dag(30, node(Expr::Atom(1)));
+    let interned = cons_dag(30, cons(Expr::Atom(1)));
+    assert!(plain.aeq(&interned));
+    assert!(!plain.aeq(&cons_dag(30, cons(Expr::Atom(2)))));
+}
+
+#[test]
+fn alpha_hash_agrees_with_aeq() {
+    let x = Name::new("x");
+    let y = Name::new("y");
+    let pairs = [
+        (
+            node(Expr::Lam(bind(x.clone(), node(Expr::Var(x.clone()))))),
+            node(Expr::Lam(bind(y.clone(), node(Expr::Var(y.clone()))))),
+        ),
+        (
+            node(Expr::Many(bind(
+                vec![x.clone(), y.clone()],
+                node(Expr::Var(y.clone())),
+            ))),
+            node(Expr::Many(bind(
+                vec![y.clone(), x.clone()],
+                node(Expr::Var(x.clone())),
+            ))),
+        ),
+        (
+            node(Expr::Ann(bind(
+                (x.clone(), node(Expr::Atom(3))),
+                node(Expr::Var(x.clone())),
+            ))),
+            node(Expr::Ann(bind(
+                (y.clone(), node(Expr::Atom(3))),
+                node(Expr::Var(y.clone())),
+            ))),
+        ),
+    ];
+    for (a, b) in &pairs {
+        assert!(a.aeq(b));
+        assert_eq!(a.alpha_hash(), b.alpha_hash());
+    }
+    assert_ne!(
+        node(Expr::Var(x.clone())).alpha_hash(),
+        node(Expr::Var(y)).alpha_hash()
+    );
+}
+
+#[test]
+fn dropped_interned_nodes_are_reclaimed() {
+    let keep = cons(Expr::Atom(u32::MAX));
+    for i in 0..10_000 {
+        drop(cons(Expr::Atom(i)));
+    }
+    let again = cons(Expr::Atom(u32::MAX));
+    assert!(again.ptr_eq(&keep));
+    assert!(cons(Expr::Atom(5)).aeq(&node(Expr::Atom(5))));
+}

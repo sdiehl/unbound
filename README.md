@@ -96,6 +96,14 @@ open-then-substitute instantiation fallback. To preserve sharing through custom
 traversals, forward the supplied contexts to children. If providing support
 metadata manually, never omit occurrences and account for binder depth.
 
+### Hash Consing
+
+`Shared::intern` returns a canonical node, so alpha-equivalent interned terms
+are the same pointer and `aeq` between them is constant time. Results of
+operations on interned terms stay interned. Since binder names are ignored,
+interning `\y. y` may return an earlier `\x. x`. `alpha_hash` gives a hash
+consistent with `aeq` for keying your own maps.
+
 ```sh
 cargo run -p unbound --release --example shared_dag
 cargo test --workspace

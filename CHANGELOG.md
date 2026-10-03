@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `Shared::intern`, hash consing up to alpha equivalence. Each thread keeps
+  one live interned node per equivalence class in a weak `hashbrown` table, so
+  alpha-equivalent interned terms are pointer equal. Operations on interned
+  nodes intern their results.
+- `Alpha::hash_in` and `Alpha::alpha_hash`, an alpha-invariant hash that skips
+  binder names, with `Pattern::pattern_hash_in` for patterns. The derive
+  generates it and `Shared` caches it per node, also using it to reject
+  unequal nodes early in `aeq`.
+
+### Changed
+
+- `Support` indexes its free names, so merging and the relevance checks for
+  closing, opening and substitution no longer scan linearly, and `Shared`
+  merges child support by reference instead of cloning it.
+
 ## [0.4.0] - 2026-09-27
 
 ### Added

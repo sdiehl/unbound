@@ -12,3 +12,5 @@ syn = { version = "3", features = [
   "visit-mut",
 ] }
 thiserror = "^2.0.17"
+hashbrown = { version = "0.17", default-features = false }
+foldhash = "0.2"

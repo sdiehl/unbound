@@ -7,6 +7,7 @@
 //!
 //! [`Bind`]: crate::Bind
 
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -59,6 +60,19 @@ pub trait Alpha {
         self.fv_in(&mut acc);
         acc
     }
+
+    /// Feed an alpha-invariant hash of this term to `state`.
+    ///
+    /// Alpha-equivalent terms must hash alike, so binder names are skipped.
+    /// The default adds nothing, which is sound but makes every term collide.
+    fn hash_in(&self, _state: &mut dyn Hasher) {}
+
+    /// An alpha-invariant hash of this term.
+    fn alpha_hash(&self) -> u64 {
+        let mut state = crate::shared::hasher();
+        self.hash_in(&mut state);
+        state.finish()
+    }
 }
 
 /// Patterns that a [`Bind`] can abstract over.
@@ -101,6 +115,8 @@ pub trait Pattern: Sized {
     fn pattern_aeq_with(&self, other: &Self, _ctx: &mut AlphaCtx) -> bool {
         self.pattern_aeq(other)
     }
+    /// Hash the pattern consistently with [`Pattern::pattern_aeq`].
+    fn pattern_hash_in(&self, _state: &mut dyn Hasher) {}
 }
 
 /// Push `name` onto `acc` unless an equal name is already there.
@@ -113,6 +129,9 @@ fn push_unique(acc: &mut Vec<AnyName>, name: AnyName) {
 impl<T> Alpha for Name<T> {
     fn support(&self) -> Support {
         Support::name(self)
+    }
+    fn hash_in(&self, mut state: &mut dyn Hasher) {
+        self.hash(&mut state);
     }
     fn aeq(&self, other: &Self) -> bool {
         self == other
@@ -138,6 +157,7 @@ macro_rules! alpha_atom {
         impl Alpha for $ty {
             fn aeq(&self, other: &Self) -> bool { self == other }
             fn support(&self) -> Support { Support::default() }
+            fn hash_in(&self, mut state: &mut dyn Hasher) { self.hash(&mut state); }
             fn close(&mut self, _level: usize, _names: &[AnyName]) {}
             fn open(&mut self, _level: usize, _names: &[AnyName]) {}
             fn fv_in(&self, _acc: &mut Vec<AnyName>) {}
@@ -177,6 +197,12 @@ impl<T: Alpha> Alpha for Option<T> {
     fn support(&self) -> Support {
         self.as_ref().map_or_else(Support::default, Alpha::support)
     }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        state.write_u8(self.is_some().into());
+        if let Some(x) = self {
+            x.hash_in(state);
+        }
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         if let Some(x) = self {
             x.fv_in(acc);
@@ -190,6 +216,12 @@ impl<T: Alpha> Alpha for Vec<T> {
     }
     fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
         self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a.aeq_with(b, ctx))
+    }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        state.write_usize(self.len());
+        for x in self {
+            x.hash_in(state);
+        }
     }
     fn close(&mut self, level: usize, names: &[AnyName]) {
         self.close_with(level, names, &mut AlphaCtx::default());
@@ -245,6 +277,9 @@ impl<T: Alpha> Alpha for Box<T> {
     fn support(&self) -> Support {
         (**self).support()
     }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        (**self).hash_in(state);
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         (**self).fv_in(acc);
     }
@@ -271,6 +306,9 @@ impl<T: Alpha + Clone> Alpha for Rc<T> {
     }
     fn support(&self) -> Support {
         (**self).support()
+    }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        (**self).hash_in(state);
     }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         (**self).fv_in(acc);
@@ -299,6 +337,9 @@ impl<T: Alpha + Clone> Alpha for Arc<T> {
     fn support(&self) -> Support {
         (**self).support()
     }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        (**self).hash_in(state);
+    }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         (**self).fv_in(acc);
     }
@@ -310,6 +351,10 @@ impl<A: Alpha, B: Alpha> Alpha for (A, B) {
     }
     fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
         self.0.aeq_with(&other.0, ctx) && self.1.aeq_with(&other.1, ctx)
+    }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        self.0.hash_in(state);
+        self.1.hash_in(state);
     }
     fn close(&mut self, level: usize, names: &[AnyName]) {
         self.close_with(level, names, &mut AlphaCtx::default());
@@ -345,6 +390,10 @@ impl<P: Pattern, T: Alpha> Alpha for Bind<P, T> {
     fn aeq_with(&self, other: &Self, ctx: &mut AlphaCtx) -> bool {
         self.pattern().pattern_aeq_with(other.pattern(), ctx)
             && self.body().aeq_with(other.body(), ctx)
+    }
+    fn hash_in(&self, state: &mut dyn Hasher) {
+        self.pattern().pattern_hash_in(state);
+        self.body().hash_in(state);
     }
     fn close(&mut self, level: usize, names: &[AnyName]) {
         self.close_with(level, names, &mut AlphaCtx::default());
@@ -417,6 +466,9 @@ impl<T> Pattern for Vec<Name<T>> {
     fn pattern_aeq(&self, other: &Self) -> bool {
         self.len() == other.len()
     }
+    fn pattern_hash_in(&self, state: &mut dyn Hasher) {
+        state.write_usize(self.len());
+    }
 
     fn pattern_fv(&self, _acc: &mut Vec<AnyName>) {}
 
@@ -453,6 +505,9 @@ impl<T, U: Alpha + Clone> Pattern for (Name<T>, U) {
 
     fn pattern_aeq(&self, other: &Self) -> bool {
         self.1.aeq(&other.1)
+    }
+    fn pattern_hash_in(&self, state: &mut dyn Hasher) {
+        self.1.hash_in(state);
     }
 
     fn pattern_fv(&self, acc: &mut Vec<AnyName>) {
@@ -495,6 +550,10 @@ impl<T, U: Alpha + Clone> Pattern for (Vec<Name<T>>, U) {
 
     fn pattern_aeq(&self, other: &Self) -> bool {
         self.0.len() == other.0.len() && self.1.aeq(&other.1)
+    }
+    fn pattern_hash_in(&self, state: &mut dyn Hasher) {
+        state.write_usize(self.0.len());
+        self.1.hash_in(state);
     }
 
     fn pattern_fv(&self, acc: &mut Vec<AnyName>) {

@@ -34,6 +34,7 @@ pub fn derive_alpha(input: TokenStream) -> TokenStream {
         quote!(&mut support),
     );
     let fv_in = traversal_body(&input.data, &format_ident!("fv_in"), quote!(acc));
+    let hash_in = hash_body(&input.data);
 
     quote! {
         impl #impl_generics unbound::Alpha for #name #ty_generics #where_clause {
@@ -57,6 +58,10 @@ pub fn derive_alpha(input: TokenStream) -> TokenStream {
 
             fn fv_in(&self, acc: &mut Vec<unbound::AnyName>) {
                 #fv_in
+            }
+
+            fn hash_in(&self, state: &mut dyn ::std::hash::Hasher) {
+                #hash_in
             }
         }
     }
@@ -154,6 +159,37 @@ fn aeq_body(data: &Data) -> TokenStream2 {
                 match (self, other) {
                     #(#arms,)*
                     _ => false,
+                }
+            }
+        }
+        Data::Union(_) => panic!("Alpha cannot be derived for unions"),
+    }
+}
+
+/// An alpha-invariant hash: the variant index, then every field in turn.
+fn hash_body(data: &Data) -> TokenStream2 {
+    match data {
+        Data::Struct(s) => {
+            let calls = struct_fields(&s.fields, quote!(self))
+                .into_iter()
+                .map(|f| quote!(#f.hash_in(state);));
+            quote!(#(#calls)*)
+        }
+        Data::Enum(e) => {
+            let arms = e.variants.iter().enumerate().map(|(i, v)| {
+                let variant = &v.ident;
+                let (locals, pat) = destructure(&v.fields, "f");
+                let calls = locals.iter().map(|l| quote!(#l.hash_in(state);));
+                quote! {
+                    Self::#variant #pat => {
+                        state.write_usize(#i);
+                        #(#calls)*
+                    }
+                }
+            });
+            quote! {
+                match self {
+                    #(#arms)*
                 }
             }
         }
