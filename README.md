@@ -96,25 +96,6 @@ open-then-substitute instantiation fallback. To preserve sharing through custom
 traversals, forward the supplied contexts to children. If providing support
 metadata manually, never omit occurrences and account for binder depth.
 
-### Hash Consing
-
-`Shared::intern` returns a canonical node, so alpha-equivalent interned terms
-are the same pointer and `aeq` between them is constant time. Results of
-operations on interned terms stay interned. Since binder names are ignored,
-interning `\y. y` may return an earlier `\x. x`. `alpha_hash` gives a hash
-consistent with `aeq` for keying your own maps.
-
-```sh
-cargo run -p unbound --release --example shared_dag
-cargo test --workspace
-```
-
-The benchmark constructs `t₀ = a; tₙ₊₁ = f tₙ tₙ` with shared children. At depth
-18, binding an unused variable retains all 38 original nodes; standard `Rc`
-traversal expands that same graph into 1,048,573 nodes. Regression tests also
-exercise affected shared graphs, different binder depths, annotations,
-substitution contexts, and independent alpha-equivalent graphs.
-
 ### Capture-Avoiding Substitution
 
 The `Subst` trait's key insight is the `is_var` method:
@@ -144,9 +125,22 @@ pub struct FreshM<T> {
 }
 ```
 
-## License
+### Hash Consing
 
-MIT Licensed. Copyright 2025-2026 Stephen Diehl.
+`Shared::intern` returns a canonical node, so alpha-equivalent interned terms
+are the same pointer and `aeq` between them is constant time. Results of
+operations on interned terms stay interned. Since binder names are ignored,
+interning `\y. y` may return an earlier `\x. x`. `alpha_hash` gives a hash
+consistent with `aeq` for keying your own maps.
+
+```sh
+cargo run -p unbound --release --example shared_dag
+cargo test --workspace
+```
+
+The benchmark constructs `t₀ = a; tₙ₊₁ = f tₙ tₙ` with shared children. At depth
+18, binding an unused variable retains all 38 original nodes; standard `Rc`
+traversal expands that same graph into 1,048,573 nodes as a stress test.
 
 ### Interner memory
 
@@ -161,3 +155,8 @@ bound-coordinate vectors, and a free-name hash index only above eight names.
 `support_ref()` borrows cached metadata; `is_known()`, `has_loose_bound_vars()`,
 `max_loose_level()`, and `bound_coordinates()` expose conservative traversal hints.
 Unknown support must not be treated as a complete bound-variable set.
+
+## License
+
+MIT Licensed. Copyright 2025-2026 Stephen Diehl.
+
