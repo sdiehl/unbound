@@ -1,6 +1,6 @@
 use std::any::{Any, TypeId};
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
 use std::ops::Deref;
@@ -16,69 +16,110 @@ use crate::{Alpha, AnyName, InstantiateCtx, Name, Subst, SubstCtx, SubstName};
 #[derive(Clone, Debug, Default)]
 pub struct Support {
     unknown: bool,
-    /// Free names in order of first occurrence, deduplicated by `indices`.
-    free: Vec<AnyName>,
-    indices: HashSet<usize, FixedState>,
-    bound: BTreeSet<(usize, usize)>,
+    // Most closed nodes have empty support; reserve only a pointer on each node.
+    data: Option<Box<SupportData>>,
 }
 
-impl Support {
-    pub fn unknown() -> Self {
-        Self {
-            unknown: true,
-            ..Self::default()
+#[derive(Clone, Debug, Default)]
+struct SupportData {
+    // Preserve first-occurrence order. Small sets do not need a hash table.
+    free: Vec<AnyName>,
+    indices: Option<HashSet<usize, FixedState>>,
+    bound: Vec<(usize, usize)>,
+}
+impl SupportData {
+    fn contains(&self, index: usize) -> bool {
+        self.indices.as_ref().map_or_else(
+            || self.free.iter().any(|n| n.index() == index),
+            |indices| indices.contains(&index),
+        )
+    }
+    fn insert_free(&mut self, name: AnyName) {
+        if self.contains(name.index()) { return; }
+        if let Some(indices) = &mut self.indices { indices.insert(name.index()); }
+        self.free.push(name);
+        if self.indices.is_none() && self.free.len() > 8 {
+            self.indices = Some(self.free.iter().map(AnyName::index).collect());
         }
     }
+    fn insert_bound(&mut self, coordinate: (usize, usize)) {
+        if let Err(i) = self.bound.binary_search(&coordinate) {
+            self.bound.insert(i, coordinate);
+        }
+    }
+}
+impl Support {
+    /// Whether the recorded support is complete.
+    pub fn is_known(&self) -> bool { !self.unknown }
+    /// Whether loose bound coordinates may occur. Unknown support is conservative.
+    pub fn has_loose_bound_vars(&self) -> bool {
+        self.unknown || !self.bounds().is_empty()
+    }
+    /// Largest recorded loose level. Only a complete upper bound when `is_known`.
+    pub fn max_loose_level(&self) -> Option<usize> {
+        self.bounds().last().map(|&(level, _)| level)
+    }
+    /// Recorded coordinates in ascending order; unknown support may omit entries.
+    pub fn bound_coordinates(&self) -> impl DoubleEndedIterator<Item = (usize, usize)> + '_ {
+        self.bounds().iter().copied()
+    }
+    fn bounds(&self) -> &[(usize, usize)] {
+        self.data.as_ref().map_or(&[], |data| data.bound.as_slice())
+    }
+    fn free(&self) -> &[AnyName] {
+        self.data.as_ref().map_or(&[], |data| data.free.as_slice())
+    }
+    fn contains(&self, index: usize) -> bool {
+        self.data.as_ref().is_some_and(|data| data.contains(index))
+    }
+    pub fn unknown() -> Self { Self { unknown: true, data: None } }
     pub fn name<T>(name: &Name<T>) -> Self {
         let mut out = Self::default();
         if let Some(n) = name.to_any() {
-            out.indices.insert(n.index());
-            out.free.push(n);
+            out.data.get_or_insert_with(Default::default).insert_free(n);
         }
         if let Some(p) = name.coordinates() {
-            out.bound.insert(p);
+            out.data.get_or_insert_with(Default::default).insert_bound(p);
         }
         out
     }
     pub fn merge(&mut self, other: Self) {
         self.unknown |= other.unknown;
-        for n in other.free {
-            if self.indices.insert(n.index()) {
-                self.free.push(n);
-            }
+        if self.data.is_none() {
+            self.data = other.data;
+        } else if let Some(other) = other.data {
+            let data = self.data.as_mut().unwrap();
+            for n in other.free { data.insert_free(n); }
+            for p in other.bound { data.insert_bound(p); }
         }
-        self.bound.extend(other.bound);
     }
     fn merge_ref(&mut self, other: &Self) {
         self.unknown |= other.unknown;
-        for n in &other.free {
-            if self.indices.insert(n.index()) {
-                self.free.push(n.clone());
-            }
+        if let Some(other) = &other.data {
+            let data = self.data.get_or_insert_with(Default::default);
+            for n in &other.free { data.insert_free(n.clone()); }
+            for &p in &other.bound { data.insert_bound(p); }
         }
-        self.bound.extend(&other.bound);
     }
     pub fn under_binder(mut self) -> Self {
-        self.bound = self
-            .bound
-            .into_iter()
-            .filter_map(|(d, p)| d.checked_sub(1).map(|d| (d, p)))
-            .collect();
+        if let Some(data) = &mut self.data {
+            data.bound.retain_mut(|(d, _)| {
+                if let Some(lower) = d.checked_sub(1) { *d = lower; true } else { false }
+            });
+            if data.free.is_empty() && data.bound.is_empty() { self.data = None; }
+        }
         self
     }
     fn closes(&self, names: &[AnyName]) -> bool {
-        self.unknown || names.iter().any(|n| self.indices.contains(&n.index()))
+        self.unknown || names.iter().any(|n| self.contains(n.index()))
     }
     fn opens(&self, level: usize, count: usize) -> bool {
-        self.unknown
-            || self
-                .bound
-                .range((level, 0)..(level, count))
-                .next()
-                .is_some()
+        let bounds = self.bounds();
+        let i = bounds.partition_point(|&p| p < (level, 0));
+        self.unknown || bounds.get(i).is_some_and(|&(d, p)| d == level && p < count)
     }
     fn substitutes<V>(&self, name: &Name<V>) -> bool {
-        self.unknown || name.index().is_none_or(|i| self.indices.contains(&i))
+        self.unknown || name.index().is_none_or(|i| self.contains(i))
     }
 }
 
@@ -106,7 +147,22 @@ pub(crate) fn hasher() -> impl Hasher {
 }
 
 /// Live interned nodes of one syntax type, keyed by their alpha hash.
-type Table<T> = HashTable<(u64, Weak<Node<T>>)>;
+struct Table<T> {
+    entries: HashTable<(u64, Weak<Node<T>>)>,
+    misses: usize,
+}
+impl<T> Table<T> {
+    fn new() -> Self { Self { entries: HashTable::new(), misses: 0 } }
+    fn collect(&mut self, shrink: bool) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|(_, weak)| weak.strong_count() > 0);
+        if shrink && self.entries.capacity() > self.entries.len().saturating_mul(4).max(64) {
+            self.entries.shrink_to_fit(|(h, _)| *h);
+        }
+        self.misses = 0;
+        before - self.entries.len()
+    }
+}
 
 thread_local! {
     static TABLES: RefCell<HashMap<TypeId, Box<dyn Any>, FixedState>> = RefCell::default();
@@ -183,6 +239,10 @@ impl<T> From<T> for Shared<T> {
     }
 }
 impl<T: Alpha> Shared<T> {
+    /// Borrow the cached support without cloning its sets.
+    pub fn support_ref(&self) -> &Support {
+        self.cached_support()
+    }
     fn cached_support(&self) -> &Support {
         self.0.support.get_or_init(|| self.deref().support())
     }
@@ -200,8 +260,8 @@ impl<T: Alpha + 'static> Shared<T> {
     /// a graph hash consed through binding and substitution. Binder names are
     /// decoration, so interning `\y. y` may return an earlier `\x. x`.
     pub fn intern(value: T) -> Self {
-        let node = Self::alloc(value, true);
-        let hash = node.cached_hash();
+        // Look up the borrowed value before allocating a candidate Rc.
+        let hash = value.alpha_hash();
         let found = TABLES.with(|tables| {
             let mut tables = tables.borrow_mut();
             let table = tables
@@ -209,21 +269,47 @@ impl<T: Alpha + 'static> Shared<T> {
                 .or_insert_with(|| Box::new(Table::<T>::new()))
                 .downcast_mut::<Table<T>>()
                 .expect("matching table type");
-            let live = table
-                .find(hash, |(h, weak)| {
-                    *h == hash && weak.upgrade().is_some_and(|n| n.value.aeq(&node.0.value))
-                })
-                .and_then(|(_, weak)| weak.upgrade());
-            if live.is_none() {
-                // Sweep dead entries before the table would grow.
-                if table.len() == table.capacity() {
-                    table.retain(|(_, weak)| weak.strong_count() > 0);
-                }
-                table.insert_unique(hash, (hash, Rc::downgrade(&node.0)), |(h, _)| *h);
-            }
-            live
+            if let Some(node) = table.entries
+                .find(hash, |(h, weak)| *h == hash && weak.upgrade().is_some_and(|n| n.value.aeq(&value)))
+                .and_then(|(_, weak)| weak.upgrade())
+            { return Some(node); }
+            None
         });
-        found.map_or(node, Self)
+        if let Some(node) = found { return Self(node); }
+        // Allocate/drop user values outside the TABLES borrow: destructors may intern.
+        let node = Self::alloc(value, true);
+        node.0.hash.set(hash).expect("new node hash");
+        TABLES.with(|tables| {
+            let mut tables = tables.borrow_mut();
+            let table = tables.get_mut(&TypeId::of::<T>()).unwrap()
+                .downcast_mut::<Table<T>>().expect("matching table type");
+            table.misses += 1;
+            // Amortize a full sweep over a proportional number of misses,
+            // including workloads that stop growing before capacity is exhausted.
+            if table.misses >= table.entries.len().max(1024) {
+                table.collect(false);
+            }
+            if let Some((_, weak)) = table.entries.find_mut(hash, |(h, weak)| *h == hash && weak.strong_count() == 0) {
+                *weak = Rc::downgrade(&node.0);
+            } else {
+                if table.entries.len() == table.entries.capacity() {
+                    table.collect(false);
+                    table.entries.reserve(table.entries.len().max(1), |(h, _)| *h);
+                }
+                table.entries.insert_unique(hash, (hash, Rc::downgrade(&node.0)), |(h, _)| *h);
+            }
+        });
+        node
+    }
+    /// Reclaim dead interned allocations of this type on the current thread and
+    /// shrink excess table capacity. Live nodes retain their canonical identity.
+    /// Returns the number of removed entries. Call at coarse phase boundaries,
+    /// not after each allocation: collection scans the table.
+    pub fn collect_dead() -> usize {
+        TABLES.with(|tables| {
+            tables.borrow_mut().get_mut(&TypeId::of::<T>())
+                .map_or(0, |table| table.downcast_mut::<Table<T>>().expect("matching table type").collect(true))
+        })
     }
     /// A node holding `value`, interned when `self` is.
     fn rebuild(&self, value: T) -> Self {
@@ -332,7 +418,7 @@ impl<T: Alpha + Clone + 'static> Alpha for Shared<T> {
         if support.unknown {
             self.deref().fv_in(acc);
         } else {
-            for n in &support.free {
+            for n in support.free() {
                 if !acc.contains(n) {
                     acc.push(n.clone());
                 }
@@ -383,5 +469,26 @@ impl<T: Alpha + Subst<V> + 'static, V> Subst<V> for Shared<T> {
         ctx.memo
             .insert(key, Box::new((self.clone(), result.clone())));
         Some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_dead_terms_reuse_their_intern_slots() {
+        let live = Shared::intern(1u64);
+        for _ in 0..100 {
+            drop(Shared::intern(2u64));
+            TABLES.with(|tables| {
+                let tables = tables.borrow();
+                let table = tables[&TypeId::of::<u64>()]
+                    .downcast_ref::<Table<u64>>()
+                    .unwrap();
+                assert_eq!(table.entries.len(), 2);
+            });
+            assert!(Shared::intern(1u64).ptr_eq(&live));
+        }
     }
 }

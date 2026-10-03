@@ -15,6 +15,32 @@ enum Expr {
 fn node(e: Expr) -> Shared<Expr> {
     Shared::new(e)
 }
+
+#[test]
+fn cached_support_exposes_loose_coordinates_and_unknown_state() {
+    let term = node(Expr::App(
+        node(Expr::Var(Name::bound(2, 1))),
+        node(Expr::Var(Name::bound(0, 0))),
+    ));
+    let support = term.support_ref();
+    assert!(support.is_known());
+    assert!(support.has_loose_bound_vars());
+    assert_eq!(support.max_loose_level(), Some(2));
+    assert_eq!(
+        support.bound_coordinates().collect::<Vec<_>>(),
+        vec![(0, 0), (2, 1)]
+    );
+    assert!(std::ptr::eq(support, term.support_ref()));
+    let under = term.support().under_binder();
+    assert_eq!(under.bound_coordinates().collect::<Vec<_>>(), vec![(1, 1)]);
+    let empty = Support::default();
+    assert!(empty.is_known());
+    assert!(!empty.has_loose_bound_vars());
+    assert_eq!(empty.max_loose_level(), None);
+    let unknown = Support::unknown();
+    assert!(!unknown.is_known());
+    assert!(unknown.has_loose_bound_vars());
+}
 fn dag(depth: usize, leaf: Shared<Expr>) -> Shared<Expr> {
     (0..depth).fold(leaf, |e, _| node(Expr::App(e.clone(), e)))
 }
