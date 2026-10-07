@@ -436,3 +436,45 @@ fn dropped_interned_nodes_are_reclaimed() {
     assert!(again.ptr_eq(&keep));
     assert!(cons(Expr::Atom(5)).aeq(&node(Expr::Atom(5))));
 }
+
+fn spine(names: &[Name<Expr>]) -> Shared<Expr> {
+    names
+        .iter()
+        .map(|n| node(Expr::Var(n.clone())))
+        .reduce(|f, a| node(Expr::App(f, a)))
+        .unwrap()
+}
+
+fn any(names: &[Name<Expr>]) -> Vec<AnyName> {
+    names.iter().map(|n| n.to_any().unwrap()).collect()
+}
+
+#[test]
+fn wide_support_keeps_exact_order_and_tolerates_mask_collisions() {
+    let names: Vec<Name<Expr>> = (0..20).map(|_| Name::new("x")).collect();
+    let low = &names[0];
+    let slot = |n: &Name<Expr>| n.to_any().unwrap().index() % 64;
+    let high = &std::iter::repeat_with(|| Name::new("y"))
+        .find(|n| slot(n) == slot(low))
+        .unwrap();
+    // First occurrence order with repeats, across the 8 to 9 threshold.
+    for width in [8, 9, 20] {
+        let order: Vec<_> = names[..width].iter().rev().cloned().collect();
+        let repeated: Vec<_> = order.iter().chain(&order).cloned().collect();
+        let term = node(Expr::App(spine(&repeated), spine(&order[..1])));
+        assert_eq!(term.fv(), any(&order));
+    }
+    // A wide term holding `low` but not its colliding partner `high`.
+    let term = spine(&names[..20]);
+    let replaced = term.subst(high, &Expr::Atom(7));
+    assert!(replaced.aeq(&term));
+    assert_eq!(replaced.fv(), any(&names[..20]));
+    let closed = bind(high.clone(), term.clone());
+    assert!(closed.instantiate(&Expr::Atom(7)).aeq(&term));
+    let closed = bind(low.clone(), term.clone());
+    assert_eq!(closed.body().fv(), any(&names[1..20]));
+    let opened = closed.instantiate(&Expr::Atom(7));
+    assert_eq!(opened.fv(), any(&names[1..20]));
+    assert!(opened.aeq(&term.subst(low, &Expr::Atom(7))));
+    assert!(!opened.aeq(&term));
+}

@@ -57,6 +57,27 @@ impl SupportData {
             self.bound.insert(i, coordinate);
         }
     }
+    fn merge_bound(&mut self, other: &[(usize, usize)]) {
+        if other.is_empty() || self.bound == other {
+            return;
+        }
+        if self.bound.is_empty() {
+            self.bound.extend_from_slice(other);
+            return;
+        }
+        let (mut i, mut j) = (0, 0);
+        let (a, b) = (&self.bound, other);
+        let mut out = Vec::with_capacity(a.len() + b.len());
+        while i < a.len() && j < b.len() {
+            let next = a[i].min(b[j]);
+            i += usize::from(a[i] == next);
+            j += usize::from(b[j] == next);
+            out.push(next);
+        }
+        out.extend_from_slice(&a[i..]);
+        out.extend_from_slice(&b[j..]);
+        self.bound = out;
+    }
     fn merge_free(&mut self, other: &SupportData) {
         if other.wide {
             self.widen();
@@ -125,9 +146,7 @@ impl Support {
         if let Some(data) = &mut self.data {
             if let Some(other) = other.data {
                 data.merge_free(&other);
-                for p in other.bound {
-                    data.insert_bound(p);
-                }
+                data.merge_bound(&other.bound);
             }
         } else {
             self.data = other.data;
@@ -139,9 +158,7 @@ impl Support {
         if let Some(other) = &other.data {
             let data = self.data.get_or_insert_with(Default::default);
             data.merge_free(other);
-            for &p in &other.bound {
-                data.insert_bound(p);
-            }
+            data.merge_bound(&other.bound);
         }
     }
     pub fn under_binder(mut self) -> Self {
