@@ -1,6 +1,6 @@
 use std::any::{Any, TypeId};
 use std::cell::{OnceCell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
 use std::ops::Deref;
@@ -22,33 +22,52 @@ pub struct Support {
 
 #[derive(Clone, Debug, Default)]
 struct SupportData {
-    // Preserve first-occurrence order. Small sets do not need a hash table.
+    // Exact free names in first-occurrence order, dropped once wide. The mask
+    // overapproximates free indices either way.
     free: Vec<AnyName>,
-    indices: Option<HashSet<usize, FixedState>>,
+    mask: u64,
+    wide: bool,
     bound: Vec<(usize, usize)>,
+}
+const NARROW: usize = 8;
+fn bit(index: usize) -> u64 {
+    1 << (index & 63)
 }
 impl SupportData {
     fn contains(&self, index: usize) -> bool {
-        self.indices.as_ref().map_or_else(
-            || self.free.iter().any(|n| n.index() == index),
-            |indices| indices.contains(&index),
-        )
+        self.mask & bit(index) != 0 && (self.wide || self.free.iter().any(|n| n.index() == index))
     }
     fn insert_free(&mut self, name: AnyName) {
-        if self.contains(name.index()) {
+        if self.wide || self.contains(name.index()) {
+            self.mask |= bit(name.index());
             return;
         }
-        if let Some(indices) = &mut self.indices {
-            indices.insert(name.index());
-        }
+        self.mask |= bit(name.index());
         self.free.push(name);
-        if self.indices.is_none() && self.free.len() > 8 {
-            self.indices = Some(self.free.iter().map(AnyName::index).collect());
+        if self.free.len() > NARROW {
+            self.widen();
         }
+    }
+    fn widen(&mut self) {
+        self.wide = true;
+        self.free = Vec::new();
     }
     fn insert_bound(&mut self, coordinate: (usize, usize)) {
         if let Err(i) = self.bound.binary_search(&coordinate) {
             self.bound.insert(i, coordinate);
+        }
+    }
+    fn merge_free(&mut self, other: &SupportData) {
+        if other.wide {
+            self.widen();
+        }
+        if self.wide {
+            self.mask |= other.mask;
+        } else {
+            for n in &other.free {
+                self.insert_free(n.clone());
+            }
+            self.mask |= other.mask;
         }
     }
 }
@@ -72,8 +91,13 @@ impl Support {
     fn bounds(&self) -> &[(usize, usize)] {
         self.data.as_ref().map_or(&[], |data| data.bound.as_slice())
     }
-    fn free(&self) -> &[AnyName] {
-        self.data.as_ref().map_or(&[], |data| data.free.as_slice())
+    /// Exact free names, or none once the set is too wide to keep.
+    fn free(&self) -> Option<&[AnyName]> {
+        match &self.data {
+            None => Some(&[]),
+            Some(data) if data.wide => None,
+            Some(data) => Some(&data.free),
+        }
     }
     fn contains(&self, index: usize) -> bool {
         self.data.as_ref().is_some_and(|data| data.contains(index))
@@ -100,9 +124,7 @@ impl Support {
         self.unknown |= other.unknown;
         if let Some(data) = &mut self.data {
             if let Some(other) = other.data {
-                for n in other.free {
-                    data.insert_free(n);
-                }
+                data.merge_free(&other);
                 for p in other.bound {
                     data.insert_bound(p);
                 }
@@ -116,9 +138,7 @@ impl Support {
         self.unknown |= other.unknown;
         if let Some(other) = &other.data {
             let data = self.data.get_or_insert_with(Default::default);
-            for n in &other.free {
-                data.insert_free(n.clone());
-            }
+            data.merge_free(other);
             for &p in &other.bound {
                 data.insert_bound(p);
             }
@@ -134,7 +154,7 @@ impl Support {
                     false
                 }
             });
-            if data.free.is_empty() && data.bound.is_empty() {
+            if data.mask == 0 && data.bound.is_empty() {
                 self.data = None;
             }
         }
@@ -478,14 +498,15 @@ impl<T: Alpha + Clone + 'static> Alpha for Shared<T> {
     }
     fn fv_in(&self, acc: &mut Vec<AnyName>) {
         let support = self.cached_support();
-        if support.unknown {
-            self.deref().fv_in(acc);
-        } else {
-            for n in support.free() {
-                if !acc.contains(n) {
-                    acc.push(n.clone());
+        match support.free() {
+            Some(free) if !support.unknown => {
+                for n in free {
+                    if !acc.contains(n) {
+                        acc.push(n.clone());
+                    }
                 }
             }
+            _ => self.deref().fv_in(acc),
         }
     }
 }
@@ -554,17 +575,27 @@ mod tests {
         assert!(std::mem::size_of::<Support>() <= 2 * std::mem::size_of::<usize>());
         let mut support = Support::default();
         let names: Vec<Name<u64>> = (0..20).map(|_| crate::s2n("x")).collect();
-        for name in names.iter().chain(names.iter().rev()) {
+        let narrow = &names[..NARROW];
+        for name in narrow.iter().chain(narrow.iter().rev()) {
             support.merge(Support::name(name));
         }
         assert_eq!(
             support
                 .free()
+                .unwrap()
                 .iter()
                 .map(AnyName::index)
                 .collect::<Vec<_>>(),
-            names.iter().map(|n| n.index().unwrap()).collect::<Vec<_>>()
+            narrow
+                .iter()
+                .map(|n| n.index().unwrap())
+                .collect::<Vec<_>>()
         );
+        for name in &names {
+            support.merge(Support::name(name));
+        }
+        assert!(support.free().is_none());
+        assert!(names.iter().all(|n| support.substitutes(n)));
         for p in [(2, 1), (0, 0), (1, 2), (2, 1)] {
             support.merge(Support::name(&Name::<u64>::bound(p.0, p.1)));
         }

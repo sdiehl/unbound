@@ -48,7 +48,8 @@ impl<T> FreshM<T> {
     /// Build a computation from a closure over the naming state.
     pub fn new<F>(f: F) -> Self
     where
-        F: FnOnce(Rc<RefCell<FreshState>>) -> T + 'static, {
+        F: FnOnce(Rc<RefCell<FreshState>>) -> T + 'static,
+    {
         FreshM {
             computation: Box::new(f),
         }
@@ -57,7 +58,8 @@ impl<T> FreshM<T> {
     /// A computation that draws no names.
     pub fn pure(value: T) -> Self
     where
-        T: 'static, {
+        T: 'static,
+    {
         FreshM::new(move |_| value)
     }
 
@@ -75,7 +77,8 @@ impl<T> FreshM<T> {
     pub fn map<U, F>(self, f: F) -> FreshM<U>
     where
         F: FnOnce(T) -> U + 'static,
-        T: 'static, {
+        T: 'static,
+    {
         FreshM::new(move |state| f(self.run_with_state(state)))
     }
 
@@ -84,7 +87,8 @@ impl<T> FreshM<T> {
     where
         F: FnOnce(T) -> FreshM<U> + 'static,
         T: 'static,
-        U: 'static, {
+        U: 'static,
+    {
         FreshM::new(move |state| {
             let result = self.run_with_state(state.clone());
             f(result).run_with_state(state)
@@ -96,7 +100,8 @@ impl<T> FreshM<T> {
     where
         F: FnOnce(T) -> FreshM<U> + 'static,
         T: 'static,
-        U: 'static, {
+        U: 'static,
+    {
         self.flat_map(f)
     }
 }

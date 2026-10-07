@@ -13,7 +13,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,7 +27,7 @@ pub(crate) fn next_index() -> usize {
 
 #[derive(Clone, Debug)]
 enum Repr {
-    Free { string: String, index: usize },
+    Free { string: Arc<str>, index: usize },
     Bound { level: usize, position: usize },
 }
 
@@ -45,7 +45,7 @@ impl<T> Name<T> {
     pub fn new(s: impl Into<String>) -> Self {
         Name {
             repr: Repr::Free {
-                string: s.into(),
+                string: Arc::from(s.into()),
                 index: next_index(),
             },
             _phantom: PhantomData,
@@ -64,7 +64,8 @@ impl<T> Name<T> {
     /// [`Bind::new`]: crate::Bind::new
     pub fn global(s: &str) -> Self
     where
-        T: 'static, {
+        T: 'static,
+    {
         static GLOBALS: OnceLock<Mutex<HashMap<(TypeId, String), usize>>> = OnceLock::new();
         let mut globals = GLOBALS
             .get_or_init(Mutex::default)
@@ -75,7 +76,7 @@ impl<T> Name<T> {
             .or_insert_with(next_index);
         Name {
             repr: Repr::Free {
-                string: s.to_string(),
+                string: Arc::from(s),
                 index,
             },
             _phantom: PhantomData,
@@ -154,7 +155,16 @@ impl<T> Name<T> {
     ///
     /// A bound name has no spelling of its own, so it freshens to `_`.
     pub fn freshen(&self) -> Self {
-        Name::new(self.string().unwrap_or("_"))
+        match &self.repr {
+            Repr::Free { string, .. } => Name {
+                repr: Repr::Free {
+                    string: string.clone(),
+                    index: next_index(),
+                },
+                _phantom: PhantomData,
+            },
+            Repr::Bound { .. } => Name::new("_"),
+        }
     }
 
     /// Replace this name with a bound one if it appears in `names`.
@@ -263,7 +273,7 @@ impl<T> Hash for Name<T> {
 /// unique across all phantom types, so erasure cannot conflate two names.
 #[derive(Clone, Debug)]
 pub struct AnyName {
-    string: String,
+    string: Arc<str>,
     index: usize,
 }
 
