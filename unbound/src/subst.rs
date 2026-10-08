@@ -1,9 +1,4 @@
 //! Capture-avoiding substitution.
-//!
-//! Because bodies are stored closed, a variable bound by an enclosing
-//! binder is a de Bruijn coordinate rather than a name, and there is no
-//! name under a binder for an incoming term to be captured by. Substitution
-//! is therefore a plain traversal with no freshening and no shadowing check.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -58,6 +53,61 @@ pub enum SubstName<T> {
 /// Terms that admit substitution of `V` for a `Name<V>`.
 ///
 /// Derive this rather than writing it by hand.
+///
+/// Because bodies are stored closed, a variable bound by an enclosing
+/// binder is a de Bruijn coordinate rather than a name, and there is no
+/// name under a binder for an incoming term to be captured by. Substitution
+/// is therefore a plain traversal with no freshening and no shadowing check.
+///
+/// The key method is [`Subst::is_var`], which recognises the variable case.
+/// The derive macro treats a variant named `V`, `Var` or `Variable`, or one
+/// marked `#[subst_var]`, as that case and generates a structural traversal
+/// for everything else. Binders need no special handling: a locally closed
+/// value can be moved under any number of binders without disturbing it.
+///
+/// By default a type substitutes into itself. `#[subst(Ty)]` derives
+/// `Subst<Ty>` instead, so a term can take substitutions for the types it
+/// mentions, and `#[subst(Self, Ty)]` derives both. A type with no variables
+/// of its own, such as the kinds annotating a type binder, takes
+/// `#[subst(_)]`, which derives `Subst<V>` for every `V`.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// #[subst(_)]
+/// enum Kind {
+///     Star,
+/// }
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// #[subst(Self, Tm)]
+/// enum Ty {
+///     Var(Name<Ty>),
+///     Arr(Box<Ty>, Box<Ty>),
+///     Forall(Bind<(Name<Ty>, Kind), Box<Ty>>),
+/// }
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// #[subst(Self, Ty)]
+/// enum Tm {
+///     Var(Name<Tm>),
+///     Ann(Box<Tm>, Ty),
+/// }
+///
+/// let (x, a, b): (Name<Tm>, Name<Ty>, Name<Ty>) = (s2n("x"), s2n("a"), s2n("b"));
+///
+/// // forall b. a -> b, with a := b, does not capture.
+/// let arr = Ty::Arr(Box::new(Ty::Var(a.clone())), Box::new(Ty::Var(b.clone())));
+/// let all = Ty::Forall(bind((b.clone(), Kind::Star), Box::new(arr)));
+/// let out = all.subst(&a, &Ty::Var(b.clone()));
+/// assert_eq!(out.fv().len(), 1);
+///
+/// // A term takes substitutions for the types it mentions.
+/// let tm = Tm::Ann(Box::new(Tm::Var(x)), Ty::Var(a.clone()));
+/// let tm: Tm = Subst::<Ty>::subst(&tm, &a, &Ty::Var(b));
+/// assert!(tm.fv().iter().all(|n| Some(n.index()) != a.index()));
+/// ```
 pub trait Subst<V>: Sized {
     /// The name this term stands for, if it is a variable.
     fn is_var(&self) -> Option<SubstName<V>>;

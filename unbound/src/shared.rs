@@ -1,3 +1,5 @@
+//! Shared expression graphs and hash consing.
+
 use std::any::{Any, TypeId};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
@@ -249,11 +251,90 @@ struct Node<T> {
     interned: bool,
 }
 
-/// Immutable shared syntax. Derived traversals preserve its DAG structure;
-/// hand-written Alpha implementations without support metadata use conservative traversal.
-/// The contained syntax must not change through interior mutability: cached
-/// support and hashes, and operation-local identity caches, rely on immutable
-/// nodes.
+/// Immutable shared syntax.
+///
+/// Use [`Shared<T>`] for ASTs with repeated subexpressions. [`Shared::new`]
+/// creates an immutable node; `clone` shares it and [`Shared::ptr_eq`] tests
+/// identity. Cached variable support skips unaffected subtrees. Derived
+/// opening, closing, substitution, and equality share operation-local memo
+/// tables, so an affected node reached more than once is transformed once per
+/// binding context. Instantiation replaces bound occurrences directly in one
+/// traversal, including simultaneous multi-variable binders. Inserted values
+/// must be locally closed, as with ordinary substitution.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// enum Expr {
+///     Var(Name<Expr>),
+///     Lam(Bind<Name<Expr>, Shared<Expr>>),
+///     App(Shared<Expr>, Shared<Expr>),
+/// }
+///
+/// // t0 = a; t(n+1) = t(n) t(n), a DAG of 21 nodes denoting 2^21 leaves.
+/// let a: Name<Expr> = s2n("a");
+/// let mut t = Shared::new(Expr::Var(a));
+/// for _ in 0..20 {
+///     t = Shared::new(Expr::App(t.clone(), t));
+/// }
+///
+/// // Binding an unused variable leaves the whole graph untouched.
+/// let x: Name<Expr> = s2n("x");
+/// let lam = bind(x, t.clone());
+/// assert!(lam.body().ptr_eq(&t));
+/// ```
+///
+/// This is opt-in: ordinary `Rc`/`Arc` still use their existing copy-on-write
+/// traversals. `Shared` is single-threaded, and contained syntax must not
+/// mutate through interior mutability. Hand-written [`Alpha`] implementations
+/// default to unknown support; hand-written [`Subst`] implementations retain
+/// the compatible open-then-substitute instantiation fallback. To preserve
+/// sharing through custom traversals, forward the supplied contexts to
+/// children. If providing [`Support`] metadata manually, never omit
+/// occurrences and account for binder depth.
+///
+/// # Hash consing
+///
+/// [`Shared::intern`] returns a canonical node, so alpha-equivalent interned
+/// terms are the same pointer and `aeq` between them is constant time.
+/// Results of operations on interned terms stay interned. Since binder names
+/// are ignored, interning `\y. y` may return an earlier `\x. x`.
+/// [`Alpha::alpha_hash`] gives a hash consistent with `aeq` for keying your
+/// own maps.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// enum Expr {
+///     Var(Name<Expr>),
+///     Lam(Bind<Name<Expr>, Shared<Expr>>),
+/// }
+///
+/// let id = |s: &str| {
+///     let n: Name<Expr> = s2n(s);
+///     Shared::intern(Expr::Lam(bind(n.clone(), Shared::intern(Expr::Var(n)))))
+/// };
+/// assert!(id("x").ptr_eq(&id("y")));
+/// ```
+///
+/// # Interner memory
+///
+/// `Shared::intern` looks up a value before allocating a node. The
+/// per-thread, per-type weak table periodically removes dead entries;
+/// [`Shared::collect_dead`] also removes dead entries and shrinks excess
+/// capacity at a coarse phase boundary. It preserves all live canonical nodes
+/// and returns the number of removed entries. Do not clear live entries:
+/// pointer identity is part of interned alpha equivalence.
+///
+/// Support metadata uses no heap allocation for empty or unknown support,
+/// compact sorted bound-coordinate vectors, and a free-name hash index only
+/// above eight names. [`Shared::support_ref`] borrows cached metadata;
+/// [`Support::is_known`], [`Support::has_loose_bound_vars`],
+/// [`Support::max_loose_level`], and [`Support::bound_coordinates`] expose
+/// conservative traversal hints. Unknown support must not be treated as a
+/// complete bound-variable set.
 pub struct Shared<T>(Rc<Node<T>>);
 
 impl<T> Shared<T> {

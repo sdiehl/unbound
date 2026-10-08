@@ -5,6 +5,39 @@
 //! terms are then alpha-equivalent exactly when they are structurally equal,
 //! so [`Alpha::aeq`] needs no renaming context.
 //!
+//! # Patterns
+//!
+//! The [`Pattern`] trait says what a binder abstracts over. Implementations
+//! are provided for a single `Name<T>`, a `Vec<Name<T>>` bound
+//! simultaneously, and either of those paired with an annotation, as in
+//! `Bind<(Name<Tm>, Ty), Box<Tm>>`. An annotation sits *outside* the scope
+//! of the binder it decorates, so it is closed at the enclosing level and
+//! contributes to the free variables of the whole binding.
+//!
+//! Children may be held in a `Box`, `Rc` or `Arc`. Shared pointers are copy
+//! on write, so closing or opening a term never disturbs another owner of the
+//! same subtree.
+//!
+//! ```
+//! use unbound::prelude::*;
+//!
+//! #[derive(Clone, Debug, Alpha)]
+//! enum Ty {
+//!     Var(Name<Ty>),
+//! }
+//!
+//! #[derive(Clone, Debug, Alpha)]
+//! enum Tm {
+//!     Var(Name<Tm>),
+//!     Lam(Bind<(Name<Tm>, Ty), Box<Tm>>),
+//! }
+//!
+//! // \(x : a). x mentions the free type variable a in its annotation.
+//! let (x, a): (Name<Tm>, Name<Ty>) = (s2n("x"), s2n("a"));
+//! let lam = Tm::Lam(bind((x.clone(), Ty::Var(a.clone())), Box::new(Tm::Var(x))));
+//! assert!(lam.fv().iter().any(|n| Some(n.index()) == a.index()));
+//! ```
+//!
 //! [`Bind`]: crate::Bind
 
 use std::hash::{Hash, Hasher};

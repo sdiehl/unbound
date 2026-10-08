@@ -8,14 +8,61 @@ use crate::Name;
 
 /// A pattern binding its names in a body.
 ///
-/// The body is stored *closed*: on construction every free occurrence of a
-/// name the pattern binds is replaced by a de Bruijn coordinate. That is
-/// what makes alpha equivalence structural and substitution incapable of
-/// capture, and it is why the body should be reached through [`unbind`]
-/// rather than [`body`].
+/// [`Bind<P, T>`] keeps its body in locally nameless form:
 ///
-/// [`unbind`]: Bind::unbind
-/// [`body`]: Bind::body
+/// - [`Bind::new`] **closes** the body, rewriting every free occurrence of a
+///   name the pattern binds into a de Bruijn coordinate
+/// - [`Bind::unbind`] **opens** it again, drawing genuinely fresh names from
+///   the global counter
+///
+/// So `\x. \y. x y` is stored as `\. \. #1.0 #0.0`, and the binder's own
+/// name is inert decoration. Three properties fall out:
+///
+/// - **Alpha equivalence is structural equality.** [`Alpha::aeq`] walks both
+///   terms in lockstep without renaming bound variables, since alpha-variants
+///   have identical de Bruijn bodies
+/// - **Substitution cannot capture.** A bound variable has no name for an
+///   incoming term to collide with, so [`Subst::subst`] needs neither
+///   freshening nor a shadowing check
+/// - **Free variables are exact.** [`Alpha::fv`] collects only genuinely free
+///   names, compared by index, so two distinct variables that happen to share
+///   a spelling are never conflated
+///
+/// Because the body is stored closed, reach for it through [`Bind::unbind`]
+/// (or [`Bind::unbind_ref`]) rather than [`Bind::body`], which hands back the
+/// raw de Bruijn form. To substitute straight into the body instead, as beta
+/// reduction or type instantiation does, use [`Bind::instantiate`], or
+/// [`Bind::instantiate_all`] for a pattern binding several names.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// enum Expr {
+///     Var(Name<Expr>),
+///     Lam(Bind<Name<Expr>, Box<Expr>>),
+///     App(Box<Expr>, Box<Expr>),
+/// }
+///
+/// let (x, y, z): (Name<Expr>, Name<Expr>, Name<Expr>) = (s2n("x"), s2n("y"), s2n("z"));
+/// let var = |n: &Name<Expr>| Expr::Var(n.clone());
+///
+/// // \x. x z
+/// let b = bind(x.clone(), Box::new(Expr::App(Box::new(var(&x)), Box::new(var(&z)))));
+/// assert_eq!(b.fv().len(), 1);
+///
+/// // Beta reduction: (\x. x z) y = y z
+/// let reduced = b.instantiate(&var(&y));
+/// assert!(reduced.aeq(&Box::new(Expr::App(Box::new(var(&y)), Box::new(var(&z))))));
+///
+/// // Opening yields a name distinct from every other, whatever its spelling.
+/// let (x1, _) = b.unbind_ref();
+/// assert_ne!(x1, x);
+/// ```
+///
+/// [`Alpha::aeq`]: crate::Alpha::aeq
+/// [`Alpha::fv`]: crate::Alpha::fv
+/// [`Subst::subst`]: crate::Subst::subst
 #[derive(Clone, Debug)]
 pub struct Bind<P, T> {
     pattern: P,

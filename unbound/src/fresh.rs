@@ -1,12 +1,4 @@
 //! Fresh name generation.
-//!
-//! Freshness itself is guaranteed by the global name counter, so
-//! [`Bind::unbind`] needs no context to be safe. What [`FreshM`] adds is
-//! *readable* freshness: it remembers which spellings are already in play
-//! within a computation and suffixes new ones, turning a second `x` into
-//! `x1` rather than another `x` distinguishable only by index.
-//!
-//! [`Bind::unbind`]: crate::Bind::unbind
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -40,6 +32,23 @@ impl FreshState {
 }
 
 /// A computation that draws readable fresh names.
+///
+/// Freshness itself is guaranteed by the global name counter, so
+/// [`Bind::unbind`] needs no context to be safe. What [`FreshM`] adds is
+/// *readable* freshness: it remembers which spellings are already in play
+/// within a computation and suffixes new ones, turning a second `x` into
+/// `x1` rather than another `x` distinguishable only by index.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// let x: Name<()> = s2n("x");
+/// let pair = x.fresh().and_then(move |a| x.fresh().map(move |b| (a, b)));
+/// let (a, b) = run_fresh(pair);
+/// assert_eq!((a.to_string(), b.to_string()), ("x".into(), "x1".into()));
+/// ```
+///
+/// [`Bind::unbind`]: crate::Bind::unbind
 pub struct FreshM<T> {
     computation: Box<dyn FnOnce(Rc<RefCell<FreshState>>) -> T>,
 }

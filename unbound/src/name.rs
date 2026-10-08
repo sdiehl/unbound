@@ -1,11 +1,4 @@
 //! Names.
-//!
-//! A name is either *free*, carrying a globally unique index, or *bound*,
-//! carrying the de Bruijn coordinates assigned when an enclosing [`Bind`]
-//! closed over it. Free names are compared by index, so two distinct
-//! variables that happen to share a spelling never alias.
-//!
-//! [`Bind`]: crate::Bind
 
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -33,8 +26,60 @@ enum Repr {
 
 /// A variable name, parameterised by the AST type it can stand for.
 ///
-/// The phantom parameter keeps a `Name<Expr>` from being mistaken for a
-/// `Name<Ty>` at compile time, at no runtime cost.
+/// A name is either *free*, carrying a globally unique index drawn from a
+/// process-wide `AtomicUsize`, or *bound*, carrying the de Bruijn coordinates
+/// `(level, position)` assigned when an enclosing [`Bind`] closed over it.
+/// `level` counts binders outwards from the innermost one; `position`
+/// distinguishes names bound simultaneously by the same pattern. Free names
+/// are compared by index, so two distinct variables that happen to share a
+/// spelling never alias.
+///
+/// # Phantom types
+///
+/// [`Name<T>`] records which AST a name can stand for. A `Name<Expr>` cannot
+/// be confused with a `Name<Ty>` at compile time, despite identical runtime
+/// representations, and the parameter costs nothing at runtime.
+///
+/// ```compile_fail
+/// use unbound::prelude::*;
+///
+/// struct Expr;
+/// struct Ty;
+///
+/// let x: Name<Expr> = s2n("x");
+/// let t: Name<Ty> = x;
+/// ```
+///
+/// # Parsing
+///
+/// A parser can resolve scope with no separate pass. [`Name::global`] returns
+/// the same name for every call with the same spelling, and [`Bind::new`]
+/// captures only the occurrences still free in its body, so building the term
+/// bottom-up with global names gives every occurrence its nearest enclosing
+/// binder. Names made with [`s2n`] are always distinct from global ones.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// enum Expr {
+///     Var(Name<Expr>),
+///     Lam(Bind<Name<Expr>, Box<Expr>>),
+/// }
+///
+/// let g = |s: &str| Name::<Expr>::global(s);
+/// let lam = |n, body| Expr::Lam(bind(n, Box::new(body)));
+///
+/// // Parsed `\x. \x. x` refers to the inner binder.
+/// let parsed = lam(g("x"), lam(g("x"), Expr::Var(g("x"))));
+///
+/// let (a, b): (Name<Expr>, Name<Expr>) = (s2n("a"), s2n("b"));
+/// assert!(parsed.aeq(&lam(a, lam(b.clone(), Expr::Var(b)))));
+/// ```
+///
+/// [`Bind`]: crate::Bind
+/// [`Bind::new`]: crate::Bind::new
+/// [`s2n`]: crate::s2n
 pub struct Name<T> {
     repr: Repr,
     _phantom: PhantomData<T>,

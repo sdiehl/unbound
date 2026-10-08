@@ -1,15 +1,50 @@
 //! Display names for printing.
-//!
-//! Opening a binder yields a name with a fresh index but a possibly reused
-//! spelling, so printing spellings naively can show `\x. \x. x` for a term
-//! whose body refers to the outer `x`. A [`NameScope`] tracks the spelling
-//! chosen for every name in scope and renames a binder only when its
-//! spelling would capture a name the body actually uses, so the printed text
-//! reads back as the same term.
 
 use crate::{AnyName, Name};
 
 /// The spellings of the names in scope while printing a term.
+///
+/// Opening a binder yields a name with a fresh index but a possibly reused
+/// spelling, so printing spellings naively can show `\x. \x. x` for a term
+/// whose body refers to the outer `x`. A [`NameScope`] tracks the spelling
+/// chosen for every name in scope and renames a binder only when its
+/// spelling would capture a name the body actually uses, so the printed text
+/// reads back as the same term.
+///
+/// `Display` on a name shows its spelling, which need not be unique; `Debug`
+/// shows the index too. To print a term, start the scope from its free names
+/// with [`NameScope::new`], which suffixes any that share a spelling. At each
+/// binder, [`NameScope::bind`] picks a spelling, [`NameScope::get`] gives the
+/// spelling for an occurrence, and [`NameScope::pop`] leaves the scope.
+///
+/// ```
+/// use unbound::prelude::*;
+///
+/// #[derive(Clone, Debug, Alpha, Subst)]
+/// enum Expr {
+///     Var(Name<Expr>),
+///     Lam(Bind<Name<Expr>, Box<Expr>>),
+/// }
+///
+/// fn show(e: &Expr, scope: &mut NameScope) -> String {
+///     match e {
+///         Expr::Var(n) => scope.get(n).to_string(),
+///         Expr::Lam(b) => {
+///             let (x, body) = b.unbind_ref();
+///             let s = scope.bind(&x, &body.fv());
+///             let out = format!("\\{s}. {}", show(&body, scope));
+///             scope.pop();
+///             out
+///         }
+///     }
+/// }
+///
+/// // \x'. x, where the binder is also spelled x.
+/// let x: Name<Expr> = s2n("x");
+/// let shadow: Name<Expr> = s2n("x");
+/// let e = Expr::Lam(bind(shadow, Box::new(Expr::Var(x))));
+/// assert_eq!(show(&e, &mut NameScope::new(&e.fv())), "\\x1. x");
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct NameScope {
     scope: Vec<(Option<usize>, String)>,
