@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,6 +12,9 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
     - name: Checkout code
@@ -55,10 +59,14 @@ jobs:
     - name: Clippy
       run: cargo clippy --all -- -D warnings
 
+    - name: Authenticate with crates.io
+      id: auth
+      uses: rust-lang/crates-io-auth-action@v1
+
     - name: Publish to crates.io
       # --workspace publishes both crates in dependency order, resolving
       # unbound's dependency on unbound-derive through a temporary local
       # registry rather than waiting for the index to catch up.
       run: cargo publish --workspace
       env:
-        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
